@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OneShare - File Sharing</title>
+<link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+<header id="header">
+  <div class="header-left">
+    <span class="brand">📁 OneShare</span>
+    <nav id="path-nav" class="path-nav"></nav>
+  </div>
+  <div class="header-right">
+    <div id="user-info" class="user-info">
+      <a href="/auth/login" class="btn btn-sm">Login</a>
+    </div>
+  </div>
+</header>
+
+<main>
+  <div id="toolbar" class="toolbar">
+    <div class="toolbar-left">
+      <button id="btn-upload" class="btn btn-primary" title="Upload files">⬆ Upload</button>
+      <button id="btn-mkdir" class="btn" title="New folder">📂 New Folder</button>
+    </div>
+    <div class="toolbar-right">
+      <button id="btn-refresh" class="btn" title="Refresh">🔄</button>
+      <button id="btn-admin" class="btn btn-admin" title="Admin panel" style="display:none">⚙ Admin</button>
+    </div>
+  </div>
+
+  <div id="file-list" class="file-list">
+    <div class="loading">Loading...</div>
+  </div>
+
+  <div id="drag-overlay" class="drag-overlay" style="display:none">
+    <div class="drag-message">Drop files to upload</div>
+  </div>
+</main>
+
+<!-- Context Menu -->
+<div id="ctx-menu" class="ctx-menu" style="display:none">
+  <div class="ctx-item" data-action="download">⬇ Download</div>
+  <div class="ctx-item" data-action="rename">✏ Rename</div>
+  <div class="ctx-item" data-action="move">📦 Move</div>
+  <div class="ctx-item ctx-danger" data-action="delete">🗑 Delete</div>
+</div>
+
+<!-- Modal -->
+<div id="modal-overlay" class="modal-overlay" style="display:none">
+  <div id="modal" class="modal">
+    <div class="modal-header">
+      <span id="modal-title">Modal</span>
+      <button class="modal-close" id="modal-close">&times;</button>
+    </div>
+    <div id="modal-body"></div>
+    <div class="modal-footer">
+      <button class="btn" id="modal-cancel">Cancel</button>
+      <button class="btn btn-primary" id="modal-ok">OK</button>
+    </div>
+  </div>
+</div>
+
+<!-- Upload Progress -->
+<div id="upload-progress" class="upload-progress" style="display:none">
+  <div class="progress-header">
+    <span id="upload-name">Uploading...</span>
+    <span id="upload-pct">0%</span>
+  </div>
+  <div class="progress-bar">
+    <div id="progress-fill" class="progress-fill" style="width:0%"></div>
+  </div>
+</div>
+
+<!-- Admin Panel -->
+<div id="admin-panel" class="admin-panel" style="display:none">
+  <div class="admin-header">
+    <h3>⚙ Administration</h3>
+    <button class="modal-close" id="admin-close">&times;</button>
+  </div>
+  <div class="admin-tabs">
+    <button class="admin-tab active" data-tab="acl">ACL</button>
+    <button class="admin-tab" data-tab="groups">Groups</button>
+    <button class="admin-tab" data-tab="users">Users</button>
+  </div>
+  <div id="admin-content"></div>
+</div>
+
+<input type="file" id="file-input" multiple style="display:none">
+
+<script src="/js/api.js"></script>
+<script src="/js/wfw-client.js"></script>
+<script src="/js/auth.js"></script>
+<script src="/js/file-explorer.js"></script>
+<script src="/js/admin.js"></script>
+<script src="/js/app.js"></script>
+</body>
+</html>

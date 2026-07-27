@@ -1,0 +1,16 @@
+# OneShare Configuration Example
+# Copy this file to config.toml and fill in your values.
+
+[server]
+listen_addr = "0.0.0.0"
+listen_port = 3456
+root_dir = "./data"
+database_url = "oneshare.db"
+session_cookie_key = "0123456789abcdef0123456789abcdef"
+hmac_secret = "change-me-to-a-random-32-byte-secret"
+
+[oidc]
+issuer_url = "https://login.example.com"
+client_id = "your-client-id"
+client_secret = "your-client-secret"
+redirect_uri = "http://localhost:3456/auth/callback"
