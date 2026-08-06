@@ -33,8 +33,17 @@ const API = {
   moveFile: (source, destination) => API.fetch('/api/files/move', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ source, destination }) }),
   mkdir: (path, name) => API.fetch('/api/files/mkdir', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path, name }) }),
 
-  // ── WFW Token ──
-  getWfwToken: (path) => API.fetch(`/api/files/wfw-token?path=${encodeURIComponent(path)}`),
+  // ── libfw Token ──
+  getToken: (path, op = 'read') => API.fetch(`/api/files/token?path=${encodeURIComponent(path)}&op=${op}`),
+
+  // ── libfw Directory listing (bearer token) ──
+  listDir: (path, token) => {
+    const url = `/dir/${encodeURIComponent(path)}`;
+    return fetch(url, { headers: { 'Authorization': `Bearer ${token}` } }).then(res => {
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return res.json();
+    });
+  },
 
   // ── Admin ──
   getUsers: () => API.fetch('/api/admin/users'),

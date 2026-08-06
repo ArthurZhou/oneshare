@@ -1,5 +1,6 @@
 use crate::acl::{self, Permission};
 use crate::auth::session::get_user_from_cookie;
+use crate::libtoken::issue_token;
 use crate::models::*;
 use crate::AppState;
 use axum::{
@@ -8,12 +9,7 @@ use axum::{
     response::IntoResponse,
 };
 use axum_extra::extract::cookie::CookieJar;
-use base64::Engine;
-use hmac::{Hmac, Mac};
-use sha2::Sha256;
 use std::sync::Arc;
-
-type HmacSha256 = Hmac<Sha256>;
 
 pub async fn list(
     State(state): State<Arc<AppState>>,
@@ -41,8 +37,8 @@ pub async fn list(
     if let Ok(read_dir) = std::fs::read_dir(&full_path) {
         for entry in read_dir.flatten() {
             let name = entry.file_name().to_string_lossy().to_string();
-            if name.starts_with('.') || name == "wfw" {
-                // Skip hidden files and wfw temp
+            if name.starts_with('.') {
+                // Skip hidden files
                 continue;
             }
             let metadata = entry.metadata().ok();
@@ -252,83 +248,58 @@ pub async fn mkdir(
     Ok(StatusCode::CREATED)
 }
 
-/// Issue a wfw upload/download token pair for a given file path
+/// Issue a libfw bearer token for file upload/download via libfw endpoints.
 #[derive(serde::Deserialize)]
-pub struct WfwTokenQuery {
+pub struct TokenQuery {
     pub path: String,
+    /// "read" (download) or "write" (upload). Defaults to "read".
+    #[serde(default = "default_op")]
+    pub op: String,
 }
 
-pub async fn get_wfw_token(
+fn default_op() -> String {
+    "read".to_string()
+}
+
+pub async fn get_token(
     State(state): State<Arc<AppState>>,
     jar: CookieJar,
-    Query(query): Query<WfwTokenQuery>,
-) -> Result<Json<WfwTokenResponse>, StatusCode> {
+    Query(query): Query<TokenQuery>,
+) -> Result<Json<TokenResponse>, StatusCode> {
     let user = get_user_from_cookie(&jar, &state.db)
         .await?
         .ok_or(StatusCode::UNAUTHORIZED)?;
 
     let rel_path = query.path.trim_start_matches('/');
 
-    // Check read permission for download tokens (upload path is scoped to uploads/)
-    acl::check_permission(&state.db, &user, rel_path, Permission::Read)
+    let required = match query.op.as_str() {
+        "write" => Permission::Write,
+        _ => Permission::Read,
+    };
+
+    acl::check_permission(&state.db, &user, rel_path, required)
         .map_err(|_| StatusCode::FORBIDDEN)?
         .then_some(())
         .ok_or(StatusCode::FORBIDDEN)?;
 
-    // Upload path is scoped to uploads/ directory for security
-    let wfw_upload_path = format!("uploads/{}/{}", user.id, rel_path);
-    // Download path uses the direct relative path under root
-    let wfw_download_path = rel_path.to_string();
+    let ttl_secs = 3600u64;
 
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
-    let expires_in = 3600u64;
-
-    // One-time upload token
-    let upload_token = uuid::Uuid::new_v4().to_string();
-    state.wfw_handle.token_pool.insert(
-        upload_token.clone(),
-        wfw_server::OneTimeToken {
-            path: wfw_upload_path,
-            op: "upload".into(),
-            inserted_at: now,
-            max_size: 0, // unlimited
-            expires_at: now + expires_in,
-        },
-    );
-
-    // HMAC download token
-    let download_token = if let Some(ref hmac_key) = state.hmac_key {
-        let payload = serde_json::json!({
-            "path": wfw_download_path,
-            "op": "read",
-            "max_size": 0,
-            "iat": now,
-            "exp": now + expires_in,
-            "iss": "oneshare",
-            "jti": uuid::Uuid::new_v4().to_string(),
-        });
-        let payload_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .encode(serde_json::to_string(&payload).unwrap().as_bytes());
-
-        let mut mac = HmacSha256::new_from_slice(hmac_key.as_bytes())
-            .expect("Invalid HMAC key");
-        mac.update(payload_b64.as_bytes());
-        let sig = mac.finalize();
-        let sig_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .encode(sig.into_bytes());
-
-        Some(format!("{}.{}", payload_b64, sig_b64))
+    let permissions: &[&str] = if query.op == "write" {
+        &["read", "write"]
     } else {
-        None
+        &["read"]
     };
 
-    Ok(Json(WfwTokenResponse {
-        upload_token,
-        download_token: download_token.unwrap_or_default(),
-        expires_in,
-        wfw_port: state.config.listen_port(),
+    let token = issue_token(
+        &state.hmac_key,
+        &user.id.to_string(),
+        rel_path,
+        permissions,
+        ttl_secs,
+    );
+
+    Ok(Json(TokenResponse {
+        token,
+        expires_in: ttl_secs,
     }))
 }

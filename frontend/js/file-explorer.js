@@ -66,7 +66,7 @@ function renderFiles(data) {
         <div class="file-size">${sizeStr}</div>
         <div class="file-mtime">${escapeHtml(entry.modified)}</div>
         <div class="file-actions">
-          ${!entry.is_dir ? `<button class="btn btn-sm btn-icon" data-action="download" title="Download">⬇</button>` : ''}
+          <button class="btn btn-sm btn-icon" data-action="download" title="${entry.is_dir ? 'Download as ZIP' : 'Download'}">⬇</button>
         </div>
       </div>`;
   });
@@ -78,12 +78,16 @@ function renderFiles(data) {
     row.addEventListener('click', () => loadFiles(row.dataset.path));
   });
 
-  // Wire up download buttons
+  // Wire up download buttons (files download directly, folders download as ZIP)
   el.querySelectorAll('[data-action="download"]').forEach(btn => {
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
       const row = btn.closest('.file-row');
-      downloadFile(row.dataset.path);
+      if (row.dataset.isDir === 'true') {
+        downloadFolder(row.dataset.path, row.dataset.name);
+      } else {
+        downloadFile(row.dataset.path);
+      }
     });
   });
 
@@ -104,10 +108,7 @@ function showContextMenu(x, y, file) {
   menu.style.left = x + 'px';
   menu.style.top = y + 'px';
 
-  // Update menu items based on file type
-  const downloadItem = menu.querySelector('[data-action="download"]');
-  if (downloadItem) downloadItem.style.display = file.isDir ? 'none' : '';
-
+  // Download is available for both files and folders (folders download as ZIP)
   menu.querySelectorAll('.ctx-item').forEach(item => {
     item.onclick = () => {
       hideContextMenu();
@@ -123,7 +124,8 @@ function hideContextMenu() {
 async function handleContextAction(action, file) {
   switch (action) {
     case 'download':
-      await downloadFile(file.path);
+      if (file.isDir) await downloadFolder(file.path, file.name);
+      else await downloadFile(file.path);
       break;
     case 'rename':
       showRenameModal(file);
@@ -141,32 +143,65 @@ async function handleContextAction(action, file) {
 
 async function downloadFile(path) {
   try {
-    // Get wfw token for download
-    const tokenResp = await API.getWfwToken(path);
-    // Simple HTTP download via wfw
-    const wfwBase = `http://${window.location.hostname}:${tokenResp.wfw_port}`;
-    const downloadUrl = `${wfwBase}/wfw/download?path=${encodeURIComponent(path)}`;
+    const tokenResp = await API.getToken(path, 'read');
+    const downloadUrl = `/file/${encodeURIComponent(path)}`;
 
-    // Create a download link
-    const a = document.createElement('a');
-    a.href = downloadUrl;
-    // Use Authorization header via a proxy or direct link with token
-    // For simplicity, we do a fetch + blob download
     const res = await fetch(downloadUrl, {
-      headers: { 'Authorization': `Bearer ${tokenResp.download_token}` },
+      headers: { 'Authorization': `Bearer ${tokenResp.token}` },
     });
     if (!res.ok) throw new Error(`Download failed: HTTP ${res.status}`);
     const blob = await res.blob();
-    const url = URL.createObjectURL(blob);
-    a.href = url;
-    a.download = path.split('/').pop();
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    triggerDownload(blob, path.split('/').pop());
   } catch (e) {
     alert('Download failed: ' + e.message);
   }
+}
+
+// Download a folder as a ZIP: enumerate all files under it via libfw's /dir
+// endpoint, fetch each file through libfw's /file endpoint, and pack them
+// client-side into a store-only ZIP archive.
+async function downloadFolder(path, name) {
+  try {
+    const tokenResp = await API.getToken(path, 'read');
+    const files = await collectFolderFiles(path, tokenResp.token);
+    if (!files.length) {
+      alert('Folder is empty');
+      return;
+    }
+
+    const entries = [];
+    for (const f of files) {
+      const res = await fetch(`/file/${encodeURIComponent(f.path)}`, {
+        headers: { 'Authorization': `Bearer ${tokenResp.token}` },
+      });
+      if (!res.ok) throw new Error(`Failed to download ${f.path}: HTTP ${res.status}`);
+      const data = await res.arrayBuffer();
+      const rel = name + '/' + (path ? f.path.substring(path.length + 1) : f.path);
+      entries.push({ path: rel, data });
+    }
+
+    const zip = await buildZip(entries);
+    triggerDownload(zip, name + '.zip');
+  } catch (e) {
+    alert('Folder download failed: ' + e.message);
+  }
+}
+
+// Recursively list every file under `path` using libfw's /dir listing.
+async function collectFolderFiles(path, token) {
+  const files = [];
+  async function walk(dir) {
+    const entries = await API.listDir(dir, token);
+    for (const entry of entries) {
+      if (entry.is_dir) {
+        await walk(entry.path);
+      } else {
+        files.push({ path: entry.path });
+      }
+    }
+  }
+  await walk(path);
+  return files;
 }
 
 function showRenameModal(file) {
@@ -240,29 +275,31 @@ function showMkdirModal() {
 
 // ── Upload ──
 
-async function handleUpload(files) {
-  if (!files.length) return;
+async function handleUpload(items) {
+  if (!items.length) return;
   try {
-    const tokenResp = await API.getWfwToken(currentPath || '/');
+    const tokenResp = await API.getToken(currentPath || '/', 'write');
     const progressEl = document.getElementById('upload-progress');
     const nameEl = document.getElementById('upload-name');
     const pctEl = document.getElementById('upload-pct');
     const fillEl = document.getElementById('progress-fill');
     progressEl.style.display = 'block';
 
-    for (const file of files) {
-      nameEl.textContent = `Uploading: ${file.name}`;
+    for (const { file, relPath } of items) {
+      nameEl.textContent = `Uploading: ${relPath}`;
       pctEl.textContent = '0%';
       fillEl.style.width = '0%';
 
-      // Use simple direct upload via wfw
-      const wfwBase = `http://${window.location.hostname}:${tokenResp.wfw_port}`;
-      const uploadPath = `uploads/${currentUser ? currentUser.id : 'anon'}/${(currentPath ? currentPath + '/' : '')}${file.name}`;
+      const uploadPath = (currentPath ? currentPath + '/' : '') + relPath;
 
       await new Promise((resolve, reject) => {
         const xhr = new XMLHttpRequest();
-        xhr.open('PUT', `${wfwBase}/wfw/upload`, true);
-        xhr.setRequestHeader('Authorization', `Bearer ${tokenResp.upload_token}`);
+        xhr.open('POST', `/file/${encodeURIComponent(uploadPath)}`, true);
+        xhr.setRequestHeader('Authorization', `Bearer ${tokenResp.token}`);
+        xhr.setRequestHeader('x-libfw-file-meta', JSON.stringify({
+          path: uploadPath,
+          size: file.size
+        }));
         xhr.setRequestHeader('Content-Type', 'application/octet-stream');
 
         xhr.upload.onprogress = (e) => {
@@ -315,11 +352,62 @@ function setupDragDrop() {
   document.addEventListener('drop', (e) => {
     e.preventDefault();
     overlay.style.display = 'none';
-    const files = Array.from(e.dataTransfer.files);
-    if (files.length > 0) {
-      handleUpload(files);
+    const dt = e.dataTransfer;
+    if (dt && (dt.files.length || (dt.items && dt.items.length))) {
+      collectDropItems(dt).then(handleUpload);
     }
   });
+}
+
+// Flatten a DataTransfer into upload items, descending into dropped folders
+// (via webkitGetAsEntry) so the directory structure is preserved.
+async function collectDropItems(dt) {
+  const items = [];
+  if (dt.items && dt.items.length) {
+    const entries = [];
+    for (const item of dt.items) {
+      if (item.kind === 'file' && item.webkitGetAsEntry) {
+        entries.push(item.webkitGetAsEntry());
+      } else if (item.kind === 'file') {
+        const f = item.getAsFile();
+        if (f) items.push({ file: f, relPath: f.name });
+      }
+    }
+    for (const entry of entries) {
+      await traverseEntry(entry, '', items);
+    }
+  } else {
+    for (const f of dt.files) items.push({ file: f, relPath: f.name });
+  }
+  return items;
+}
+
+async function traverseEntry(entry, base, out) {
+  if (!entry) return;
+  if (entry.isFile) {
+    await new Promise((resolve, reject) => {
+      entry.file((file) => {
+        out.push({ file, relPath: base ? base + '/' + file.name : file.name });
+        resolve();
+      }, reject);
+    });
+  } else if (entry.isDirectory) {
+    const reader = entry.createReader();
+    const children = await new Promise((resolve, reject) => {
+      const all = [];
+      const readBatch = () => {
+        reader.readEntries((batch) => {
+          if (!batch.length) resolve(all);
+          else { all.push(...batch); readBatch(); }
+        }, reject);
+      };
+      readBatch();
+    });
+    const childBase = base ? base + '/' + entry.name : entry.name;
+    for (const child of children) {
+      await traverseEntry(child, childBase, out);
+    }
+  }
 }
 
 // ── Modal helpers ──
@@ -391,4 +479,114 @@ function escapeHtml(str) {
   const div = document.createElement('div');
   div.textContent = str;
   return div.innerHTML;
+}
+
+// ── ZIP helpers (store-only; used for folder download) ──
+
+const CRC_TABLE = (() => {
+  const t = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+    t[n] = c >>> 0;
+  }
+  return t;
+})();
+
+function crc32(buf) {
+  const u8 = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
+  let c = 0xFFFFFFFF;
+  for (let i = 0; i < u8.length; i++) c = CRC_TABLE[(c ^ u8[i]) & 0xFF] ^ (c >>> 8);
+  return (c ^ 0xFFFFFFFF) >>> 0;
+}
+
+function dosDateTime(date) {
+  const time = ((date.getHours() & 0x1f) << 11)
+    | ((date.getMinutes() & 0x3f) << 5)
+    | ((date.getSeconds() >> 1) & 0x1f);
+  const day = ((date.getFullYear() >= 1980 ? date.getFullYear() - 1980 : 0) << 9)
+    | (((date.getMonth() + 1) & 0x0f) << 5)
+    | (date.getDate() & 0x1f);
+  return { time, day };
+}
+
+// Build a valid store-only ZIP archive from [{ path, data }] entries.
+async function buildZip(entries) {
+  const encoder = new TextEncoder();
+  const now = dosDateTime(new Date());
+  const localParts = [];
+  const centralHeaders = [];
+  let offset = 0;
+
+  for (const entry of entries) {
+    const nameBytes = encoder.encode(entry.path);
+    const data = entry.data instanceof Uint8Array ? entry.data : new Uint8Array(entry.data);
+    const crc = crc32(data);
+    const size = data.length;
+
+    // Local file header
+    const local = new Uint8Array(30 + nameBytes.length);
+    const lv = new DataView(local.buffer);
+    lv.setUint32(0, 0x04034b50, true);
+    lv.setUint16(4, 20, true);
+    lv.setUint16(6, 0x0800, true); // UTF-8 filename flag
+    lv.setUint16(8, 0, true); // store (no compression)
+    lv.setUint16(10, now.time, true);
+    lv.setUint16(12, now.day, true);
+    lv.setUint32(14, crc, true);
+    lv.setUint32(18, size, true);
+    lv.setUint32(22, size, true);
+    lv.setUint16(26, nameBytes.length, true);
+    lv.setUint16(28, 0, true);
+    local.set(nameBytes, 30);
+    localParts.push(local, data);
+
+    // Central directory header
+    const central = new Uint8Array(46 + nameBytes.length);
+    const cv = new DataView(central.buffer);
+    cv.setUint32(0, 0x02014b50, true);
+    cv.setUint16(4, 20, true);
+    cv.setUint16(6, 20, true);
+    cv.setUint16(8, 0x0800, true);
+    cv.setUint16(10, 0, true);
+    cv.setUint16(12, now.time, true);
+    cv.setUint16(14, now.day, true);
+    cv.setUint32(16, crc, true);
+    cv.setUint32(20, size, true);
+    cv.setUint32(24, size, true);
+    cv.setUint16(28, nameBytes.length, true);
+    cv.setUint16(30, 0, true);
+    central.set(nameBytes, 46);
+    cv.setUint32(42, offset, true);
+
+    centralHeaders.push(central);
+    offset += local.length + size;
+  }
+
+  const centralStart = offset;
+  let centralSize = 0;
+  for (const c of centralHeaders) centralSize += c.length;
+
+  // End of central directory record
+  const eocd = new Uint8Array(22);
+  const ev = new DataView(eocd.buffer);
+  ev.setUint32(0, 0x06054b50, true);
+  ev.setUint16(8, entries.length, true);
+  ev.setUint16(10, entries.length, true);
+  ev.setUint32(12, centralSize, true);
+  ev.setUint32(16, centralStart, true);
+
+  return new Blob([...localParts, ...centralHeaders, eocd], { type: 'application/zip' });
+}
+
+function triggerDownload(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  // Defer revoke so the browser has time to start the download.
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }

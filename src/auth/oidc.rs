@@ -128,7 +128,7 @@ impl OidcClient {
     async fn fetch_discovery(client: &Client, issuer: &str) -> Option<OidcDiscovery> {
         let discovery_url = format!("{}/.well-known/openid-configuration", issuer);
 
-        tracing::info!("Fetching OIDC discovery document: {}", discovery_url);
+        tracing::debug!("Fetching OIDC discovery document: {}", discovery_url);
 
         let resp = match client.get(&discovery_url).send().await {
             Ok(r) => r,
@@ -182,7 +182,7 @@ impl OidcClient {
             if discovered_issuer != issuer {
                 tracing::warn!(
                     "OIDC discovery issuer mismatch: configured={}, discovered={}. \
-                     Using discovered issuer.",
+                     Proceeding with discovered endpoints (ID token is not validated).",
                     issuer, discovered_issuer,
                 );
             }
@@ -205,7 +205,7 @@ impl OidcClient {
             return None;
         }
 
-        tracing::info!(
+        tracing::debug!(
             "OIDC discovery succeeded: auth={}, token={}, userinfo={}",
             discovery.authorization_endpoint.as_deref().unwrap_or("?"),
             discovery.token_endpoint.as_deref().unwrap_or("?"),
@@ -227,7 +227,7 @@ impl OidcClient {
             csrf_state,
         );
 
-        tracing::info!(
+        tracing::debug!(
             "Generated authorize URL: {}... (csrf_state={})",
             &url[..url.len().min(200)],
             csrf_state,
@@ -240,7 +240,7 @@ impl OidcClient {
     /// Does NOT validate any ID token — just gets userinfo via access_token,
     /// matching the approach in example.py.
     pub async fn exchange_code(&self, code: &str) -> Result<OidcUserInfo, String> {
-        tracing::info!(
+        tracing::debug!(
             "Exchanging authorization code: {}...",
             &code.chars().take(20).collect::<String>(),
         );
@@ -274,12 +274,6 @@ impl OidcClient {
             .await
             .map_err(|e| format!("Failed to read token response: {}", e))?;
 
-        tracing::info!(
-            "Token endpoint response: HTTP {} (body first 500 chars: {})",
-            token_status,
-            &token_body[..token_body.len().min(500)]
-        );
-
         if !token_status.is_success() {
             return Err(format!(
                 "Token endpoint returned HTTP {}: {}",
@@ -308,7 +302,7 @@ impl OidcClient {
             msg
         })?;
 
-        tracing::info!("Got access_token (length={})", access_token.len());
+        tracing::debug!("Got access_token (length={})", access_token.len());
 
         // Step 2: GET userinfo with Bearer token
         let user_resp = self
@@ -327,12 +321,6 @@ impl OidcClient {
             .text()
             .await
             .map_err(|e| format!("Failed to read userinfo response: {}", e))?;
-
-        tracing::info!(
-            "Userinfo endpoint response: HTTP {} (body: {})",
-            user_status,
-            &user_body[..user_body.len().min(500)]
-        );
 
         if !user_status.is_success() {
             return Err(format!(
@@ -369,7 +357,7 @@ impl OidcClient {
             .unwrap_or_else(|| sub.clone());
         let email = user_data.email.unwrap_or_default();
 
-        tracing::info!(
+        tracing::debug!(
             "User info extracted: sub={}, name={}, email={}",
             sub, name, email,
         );

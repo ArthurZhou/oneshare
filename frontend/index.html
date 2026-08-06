@@ -23,6 +23,7 @@
   <div id="toolbar" class="toolbar">
     <div class="toolbar-left">
       <button id="btn-upload" class="btn btn-primary" title="Upload files">⬆ Upload</button>
+      <button id="btn-upload-folder" class="btn" title="Upload a folder (preserves structure)">⬆ Folder</button>
       <button id="btn-mkdir" class="btn" title="New folder">📂 New Folder</button>
     </div>
     <div class="toolbar-right">
@@ -89,9 +90,9 @@
 </div>
 
 <input type="file" id="file-input" multiple style="display:none">
+<input type="file" id="folder-input" webkitdirectory style="display:none">
 
 <script src="/js/api.js"></script>
-<script src="/js/wfw-client.js"></script>
 <script src="/js/auth.js"></script>
 <script src="/js/file-explorer.js"></script>
 <script src="/js/admin.js"></script>

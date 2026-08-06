@@ -20,10 +20,23 @@ function setupEventListeners() {
     document.getElementById('file-input').click();
   });
 
+  // Upload Folder button
+  document.getElementById('btn-upload-folder')?.addEventListener('click', () => {
+    document.getElementById('folder-input').click();
+  });
+
   // File input change
   document.getElementById('file-input')?.addEventListener('change', (e) => {
     if (e.target.files.length > 0) {
-      handleUpload(Array.from(e.target.files));
+      handleUpload(Array.from(e.target.files).map(f => ({ file: f, relPath: f.name })));
+      e.target.value = '';
+    }
+  });
+
+  // Folder input change
+  document.getElementById('folder-input')?.addEventListener('change', (e) => {
+    if (e.target.files.length > 0) {
+      handleUpload(Array.from(e.target.files).map(f => ({ file: f, relPath: f.webkitRelativePath || f.name })));
       e.target.value = '';
     }
   });

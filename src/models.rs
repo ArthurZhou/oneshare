@@ -66,11 +66,9 @@ pub struct AddUserToGroupRequest {
 }
 
 #[derive(Debug, Serialize)]
-pub struct WfwTokenResponse {
-    pub upload_token: String,
-    pub download_token: String,
+pub struct TokenResponse {
+    pub token: String,
     pub expires_in: u64,
-    pub wfw_port: u16,
 }
 
 #[derive(Debug, Serialize)]

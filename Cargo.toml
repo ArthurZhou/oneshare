@@ -1,11 +1,11 @@
 [package]
-name = "oneshare-backend"
+name = "oneshare"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-axum = { version = "0.7", features = ["macros"] }
-axum-extra = { version = "0.9", features = ["cookie", "cookie-private", "cookie-signed"] }
+axum = { version = "0.8", features = ["macros"] }
+axum-extra = { version = "0.10", features = ["cookie", "cookie-private", "cookie-signed"] }
 tokio = { version = "1", features = ["full"] }
 tower = "0.4"
 tower-http = { version = "0.5", features = ["cors", "fs"] }
@@ -17,14 +17,12 @@ chrono = { version = "0.4", features = ["serde"] }
 rusqlite = { version = "0.31", features = ["bundled"] }
 openidconnect = "3"
 url = "2"
-ring = "0.17"
 sha2 = "0.10"
 base64 = "0.22"
 hmac = "0.12"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-walkdir = "2"
 mime_guess = "2"
-bytes = "1"
-wfw-server = "0.1"
+libfw-core = "0.1"
+libfw-server = "0.1"
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls"] }

@@ -70,21 +70,11 @@ pub async fn login(
 ) -> impl IntoResponse {
     let (url, csrf_state) = state.oidc_client.authorize_url();
 
-    tracing::info!(
-        "Storing OIDC state: csrf_state={}",
-        csrf_state,
-    );
-
     state
         .oidc_states
         .lock()
         .unwrap()
         .insert(csrf_state, ());
-
-    tracing::info!(
-        "Redirecting user to OIDC provider. authorize_url length={}",
-        url.len()
-    );
 
     Redirect::to(&url)
 }
@@ -94,7 +84,7 @@ pub async fn callback(
     jar: CookieJar,
     Query(query): Query<CallbackQuery>,
 ) -> Response {
-    tracing::info!(
+    tracing::debug!(
         "OIDC callback received: code={}..., state={:?}",
         &query.code.chars().take(20).collect::<String>(),
         query.state,
@@ -120,8 +110,6 @@ pub async fn callback(
             );
         }
     };
-
-    tracing::info!("Looking up stored OIDC state for csrf_state={}", csrf_secret);
 
     if state
         .oidc_states
@@ -153,8 +141,6 @@ pub async fn callback(
         );
     };
 
-    tracing::info!("OIDC state found and consumed. Starting token exchange.");
-
     // Step 2: exchange authorization code for tokens
     let user_info = match state
         .oidc_client
@@ -162,7 +148,7 @@ pub async fn callback(
         .await
     {
         Ok(info) => {
-            tracing::info!(
+            tracing::debug!(
                 "Token exchange succeeded. sub={}, name={}, email={}",
                 info.sub, info.name, info.email,
             );
@@ -188,7 +174,6 @@ pub async fn callback(
     };
 
     // Step 3: create or update user in database
-    tracing::info!("BEFORE create_user in DB");
     let user = match state
         .db
         .create_user(&user_info.sub, &user_info.name, &user_info.email)
@@ -218,13 +203,11 @@ pub async fn callback(
     };
 
     // Step 4: create session
-    tracing::info!("BEFORE set_session");
     let new_jar = match state
         .session_manager
         .set_session(jar, &state.db, user.id)
     {
         Ok(j) => {
-            tracing::info!("Session created for user_id={}", user.id);
             j
         }
         Err(e) => {
@@ -245,7 +228,6 @@ pub async fn callback(
     };
 
     // Step 5: build redirect response with session cookie
-    tracing::info!("BEFORE returning redirect response");
     (new_jar, Redirect::to("/")).into_response()
 }
 pub async fn logout(

@@ -65,8 +65,4 @@ impl Config {
     pub fn hmac_secret(&self) -> &str {
         &self.server.hmac_secret
     }
-
-    pub fn wfw_root(&self) -> PathBuf {
-        self.server.root_dir.join("wfw")
-    }
 }

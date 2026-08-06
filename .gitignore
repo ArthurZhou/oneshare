@@ -1,5 +1,5 @@
 # Rust build artifacts
-backend/target/
+target/
 
 # Data directory (runtime files)
 data/
@@ -25,3 +25,5 @@ config.toml
 # OS generated files
 Thumbs.db
 ehthumbs.db
+
+.venv/

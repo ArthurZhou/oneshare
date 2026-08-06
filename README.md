@@ -4,7 +4,7 @@ A self-hosted web file sharing application — like alist but serving only local
 
 **Features:**
 - 📂 Browse local directories with a responsive web UI
-- ⬆⬇ Upload & download files via [wfw](https://crates.io/crates/wfw-server) streaming protocol
+- ⬆⬇ Upload & download files via [libfw](https://github.com/ArthurZhou/libfw) streaming protocol
 - ✏ Move, rename, delete, create folders
 - 🔐 OIDC authentication (supports Authentik, Keycloak, Google, etc.)
 - 🔒 ACL-based access control (per-path, per-user, per-group)
@@ -12,9 +12,9 @@ A self-hosted web file sharing application — like alist but serving only local
 - ⚙ Admin panel for managing ACLs and groups
 
 **Architecture:**
-- Rust backend (Axum + wfw-server + SQLite + openidconnect)
+- Rust backend (Axum + libfw + SQLite + openidconnect)
 - Vanilla JavaScript frontend (no framework)
-- wfw for efficient large-file upload/download with resume support
+- libfw for efficient large-file upload/download with resume & range support
 
 ## Quick Start
 
@@ -30,10 +30,7 @@ cp config.example.toml config.toml
 ### 2. Build and run
 
 ```bash
-cd backend
-cargo build --release
-mkdir -p ../data
-../target/release/oneshare-backend
+cargo run --release
 ```
 
 ### 3. Access
@@ -47,11 +44,11 @@ All settings are in `config.toml`:
 | Section | Key | Default | Description |
 |---------|-----|---------|-------------|
 | `[server]` | `listen_addr` | `0.0.0.0` | Listen address |
-| `[server]` | `listen_port` | `3456` | Main web UI port (wfw uses port+1) |
+| `[server]` | `listen_port` | `3456` | HTTP listen port |
 | `[server]` | `root_dir` | `./data` | Root directory to serve |
 | `[server]` | `database_url` | `oneshare.db` | SQLite database path |
 | `[server]` | `session_cookie_key` | *(default)* | Cookie encryption key |
-| `[server]` | `hmac_secret` | *(default)* | HMAC secret for wfw download tokens |
+| `[server]` | `hmac_secret` | *(default)* | HMAC secret for libfw bearer tokens |
 | `[oidc]` | `issuer_url` | *(required)* | OIDC issuer URL |
 | `[oidc]` | `client_id` | *(required)* | OIDC client ID |
 | `[oidc]` | `client_secret` | *(required)* | OIDC client secret |
@@ -71,7 +68,11 @@ Entries are path-prefix-based: an ACL set for `/photos` applies to `/photos` and
 
 The first user to log in automatically becomes admin.
 
-## Ports
+## API
 
-- **Port 3456**: Web UI + API
-- **Port 3457**: wfw file transfer (internal, managed automatically)
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/file/{*path}` | Bearer token | Download file (Range/ETag support) |
+| POST | `/file/{*path}` | Bearer token | Upload file (streaming) |
+| GET | `/dir/{*path}` | Bearer token | Directory listing (libfw) |
+| GET | `/api/files/token?path=&op=` | Session | Issue a libfw bearer token |
