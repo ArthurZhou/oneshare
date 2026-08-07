@@ -157,9 +157,9 @@ async function downloadFile(path) {
   }
 }
 
-// Download a folder as a ZIP: enumerate all files under it via libfw's /dir
-// endpoint, fetch each file through libfw's /file endpoint, and pack them
-// client-side into a store-only ZIP archive.
+// Download a folder to the user's local filesystem. It prefers the browser
+// File System Access API (showDirectoryPicker) so the folder is saved as a real
+// directory tree; browsers without that API fall back to a client-side ZIP.
 async function downloadFolder(path, name) {
   try {
     const tokenResp = await API.getToken(path, 'read');
@@ -169,6 +169,31 @@ async function downloadFolder(path, name) {
       return;
     }
 
+    // Primary path: File System Access API -> write each file into a real folder.
+    if (window.showDirectoryPicker) {
+      const rootHandle = await window.showDirectoryPicker();
+      for (const f of files) {
+        const res = await fetch(`/file/${encodeURIComponent(f.path)}`, {
+          headers: { 'Authorization': `Bearer ${tokenResp.token}` },
+        });
+        if (!res.ok) throw new Error(`Failed to download ${f.path}: HTTP ${res.status}`);
+        const data = await res.arrayBuffer();
+        const rel = path ? f.path.substring(path.length + 1) : f.path;
+        const parts = rel.split('/');
+        const fileName = parts.pop();
+        let dirHandle = rootHandle;
+        for (const part of parts) {
+          dirHandle = await dirHandle.getDirectoryHandle(part, { create: true });
+        }
+        const fileHandle = await dirHandle.getFileHandle(fileName, { create: true });
+        const writable = await fileHandle.createWritable();
+        await writable.write(data);
+        await writable.close();
+      }
+      return;
+    }
+
+    // Fallback: pack the folder into a store-only ZIP archive.
     const entries = [];
     for (const f of files) {
       const res = await fetch(`/file/${encodeURIComponent(f.path)}`, {
@@ -275,10 +300,24 @@ function showMkdirModal() {
 
 // ── Upload ──
 
-async function handleUpload(items) {
+async function handleUpload(input) {
+  // Accept both raw File objects (legacy callers, e.g. a stale cached app.js)
+  // and { file, relPath } items, then drop anything without a File so we never
+  // dereference `file.size` on undefined.
+  const items = Array.from(input || [])
+    .map((it) =>
+      it instanceof File
+        ? { file: it, relPath: it.webkitRelativePath || it.name }
+        : it
+    )
+    .filter((it) => it && it.file);
   if (!items.length) return;
+
+  // Snapshot the destination folder when the task starts, so navigating away in
+  // the UI while files are still in flight does not redirect the upload.
+  const destPath = currentPath || '';
   try {
-    const tokenResp = await API.getToken(currentPath || '/', 'write');
+    const tokenResp = await API.getToken(destPath || '/', 'write');
     const progressEl = document.getElementById('upload-progress');
     const nameEl = document.getElementById('upload-name');
     const pctEl = document.getElementById('upload-pct');
@@ -290,14 +329,17 @@ async function handleUpload(items) {
       pctEl.textContent = '0%';
       fillEl.style.width = '0%';
 
-      const uploadPath = (currentPath ? currentPath + '/' : '') + relPath;
+      const uploadPath = (destPath ? destPath + '/' : '') + relPath;
 
       await new Promise((resolve, reject) => {
         const xhr = new XMLHttpRequest();
         xhr.open('POST', `/file/${encodeURIComponent(uploadPath)}`, true);
         xhr.setRequestHeader('Authorization', `Bearer ${tokenResp.token}`);
+        // HTTP header values must be Latin-1; URL-encode the path so non-ASCII
+        // (e.g. Chinese) filenames don't break setRequestHeader. The server
+        // writes to the URL-decoded path, so the header is only informational.
         xhr.setRequestHeader('x-libfw-file-meta', JSON.stringify({
-          path: uploadPath,
+          path: encodeURIComponent(uploadPath),
           size: file.size
         }));
         xhr.setRequestHeader('Content-Type', 'application/octet-stream');
@@ -366,9 +408,13 @@ async function collectDropItems(dt) {
   if (dt.items && dt.items.length) {
     const entries = [];
     for (const item of dt.items) {
-      if (item.kind === 'file' && item.webkitGetAsEntry) {
-        entries.push(item.webkitGetAsEntry());
-      } else if (item.kind === 'file') {
+      if (item.kind !== 'file') continue;
+      // Prefer the entry API (preserves folder structure); if it is unavailable
+      // or returns null, fall back to getAsFile() so the file is never dropped.
+      const entry = item.webkitGetAsEntry ? item.webkitGetAsEntry() : null;
+      if (entry) {
+        entries.push(entry);
+      } else {
         const f = item.getAsFile();
         if (f) items.push({ file: f, relPath: f.name });
       }

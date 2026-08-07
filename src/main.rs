@@ -21,9 +21,10 @@ use libfw_server::{router as libfw_router, FsStorage, ServerState};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
-use tower::Service;
+use tower::{Layer, Service};
 use tower_http::cors::CorsLayer;
 use tower_http::services::ServeDir;
+use tower_http::set_header::SetResponseHeaderLayer;
 
 pub struct AppState {
     pub db: Database,
@@ -149,7 +150,16 @@ async fn main() {
         // own path match is the only one its `Path` extractor sees.
         .route("/file/{*path}", any_service(FreshPathParams::new(libfw_app.clone())))
         .route("/dir/{*path}", any_service(FreshPathParams::new(libfw_app)))
-        .fallback_service(ServeDir::new("./frontend"))
+        // Serve the frontend with revalidation: without a Cache-Control header,
+        // browsers heuristically cache JS/CSS, which caused stale `app.js` to be
+        // mixed with a newer `file-explorer.js` (and a spurious upload error).
+        .fallback_service(
+            SetResponseHeaderLayer::overriding(
+                axum::http::header::CACHE_CONTROL,
+                axum::http::HeaderValue::from_static("no-cache, must-revalidate"),
+            )
+            .layer(ServeDir::new("./frontend")),
+        )
         .layer(CorsLayer::permissive())
         .with_state(state);
 
