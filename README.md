@@ -43,7 +43,15 @@ cd ..
 cargo run --release
 ```
 
-(`./build.sh` builds the frontend automatically before the musl release build.)
+For a fully static musl binary (what the GitHub release workflow produces),
+run the same frontend build above, then build with the musl target:
+
+```bash
+rustup target add x86_64-unknown-linux-musl   # once
+sudo apt-get install -y musl-tools perl       # once (ring needs a C toolchain + perl)
+CC=musl-gcc CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc \
+  cargo build --release --target x86_64-unknown-linux-musl
+```
 
 ### 3. Access
 

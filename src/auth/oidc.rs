@@ -30,6 +30,13 @@ impl OidcClient {
     pub async fn new(config: &OidcConfig) -> Result<Self, String> {
         let base = config.issuer_url.trim_end_matches('/');
 
+        // reqwest is compiled with `rustls-no-provider` and we supply `ring`
+        // as the crypto provider (instead of the default `aws-lc-rs`, so the
+        // build needs no cmake). rustls requires the provider to be installed
+        // explicitly before any client is built. Ignore the error if a
+        // provider is already installed (e.g. on a second OidcClient).
+        let _ = rustls::crypto::ring::default_provider().install_default();
+
         let client = Client::builder()
             .timeout(std::time::Duration::from_secs(15))
             .build()
