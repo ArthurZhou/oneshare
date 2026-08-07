@@ -6,6 +6,8 @@ data/
 
 # SQLite database
 *.db
+*.db-shm
+*.db-wal
 
 # Configuration with secrets
 config.toml
