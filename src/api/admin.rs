@@ -62,6 +62,24 @@ pub async fn delete_group(
     Ok(StatusCode::OK)
 }
 
+pub async fn list_group_members(
+    State(state): State<Arc<AppState>>,
+    jar: CookieJar,
+    Path(group_id): Path<i64>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let user = get_user_from_cookie(&jar, &state.db)
+        .await?
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+    if user.is_admin != 1 {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    let members = state
+        .db
+        .list_group_members(group_id)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(serde_json::to_value(members).unwrap()))
+}
+
 pub async fn add_user_to_group(
     State(state): State<Arc<AppState>>,
     jar: CookieJar,

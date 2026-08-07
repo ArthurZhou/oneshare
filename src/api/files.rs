@@ -23,10 +23,20 @@ pub async fn list(
     let rel_path = query.path.unwrap_or_else(|| "".to_string());
     let rel_path = rel_path.trim_start_matches('/').to_string();
 
-    acl::check_permission(&state.db, &user, &rel_path, Permission::Read)
-        .map_err(|_| StatusCode::FORBIDDEN)?
-        .then_some(())
-        .ok_or(StatusCode::FORBIDDEN)?;
+    // Fetch the ACL context once and reuse it for the directory itself and
+    // every entry, so listings hide anything the user cannot read.
+    let acl_entries = state
+        .db
+        .list_acl_entries()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let user_groups = state
+        .db
+        .get_user_groups(user.id)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    if !acl::can_access(&user, &user_groups, &acl_entries, &rel_path, &acl::Permission::Read) {
+        return Err(StatusCode::FORBIDDEN);
+    }
 
     let full_path = state.config.root_dir().join(&rel_path);
     if !full_path.exists() {
@@ -79,6 +89,11 @@ pub async fn list(
             });
         }
     }
+
+    // Only show entries the user can read; inaccessible files/dirs are hidden.
+    entries.retain(|e| {
+        acl::can_access(&user, &user_groups, &acl_entries, &e.path, &acl::Permission::Read)
+    });
 
     entries.sort_by(|a, b| {
         if a.is_dir != b.is_dir {

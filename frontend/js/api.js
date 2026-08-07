@@ -52,6 +52,7 @@ const API = {
   getGroups: () => API.fetch('/api/admin/groups'),
   createGroup: (name, description) => API.fetch('/api/admin/groups', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, description }) }),
   deleteGroup: (id) => API.fetch(`/api/admin/groups/${id}`, { method: 'DELETE' }),
+  getGroupMembers: (id) => API.fetch(`/api/admin/groups/${id}/members`),
   addUserToGroup: (userId, groupId) => API.fetch('/api/admin/groups/add-user', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ user_id: userId, group_id: groupId }) }),
   removeUserFromGroup: (userId, groupId) => API.fetch('/api/admin/groups/remove-user', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ user_id: userId, group_id: groupId }) }),
   getAcl: () => API.fetch('/api/admin/acl'),

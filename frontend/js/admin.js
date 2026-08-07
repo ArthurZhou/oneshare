@@ -96,8 +96,13 @@ async function renderGroupsPanel() {
 
   let rows = '';
   groups.forEach(g => {
+    const count = typeof g.member_count === 'number' ? g.member_count : 0;
     rows += `<div class="admin-group-row">
-      <div>👥 <strong>${escapeHtml(g.name)}</strong> ${g.description ? `— ${escapeHtml(g.description)}` : ''}</div>
+      <div>
+        <strong>👥 ${escapeHtml(g.name)}</strong>
+        <span class="member-count">${count} member${count === 1 ? '' : 's'}</span>
+        ${g.description ? `<span class="group-desc">— ${escapeHtml(g.description)}</span>` : ''}
+      </div>
       <div>
         <button class="btn btn-sm" data-manage-group="${g.id}" data-name="${escapeHtml(g.name)}">👤 Manage</button>
         <button class="btn btn-sm btn-danger" data-delete-group="${g.id}">×</button>
@@ -146,38 +151,44 @@ function wireGroupEvents() {
 }
 
 async function showGroupManage(groupId, groupName) {
-  const users = await API.getUsers();
-  // Show modal with user list and add/remove buttons
-  let html = `<h3 style="margin-bottom:12px">Manage: ${escapeHtml(groupName)}</h3>`;
-  html += '<div style="max-height:300px;overflow-y:auto">';
-  users.forEach(u => {
-    html += `<div class="modal-user-row">
-      <span>👤 ${escapeHtml(u.display_name)}</span>
-      <div>
-        <button class="btn btn-sm" data-add-user="${u.id}" data-gid="${groupId}">+ Add</button>
-        <button class="btn btn-sm btn-danger" data-remove-user="${u.id}" data-gid="${groupId}">- Remove</button>
-      </div>
+  const [users, members] = await Promise.all([API.getUsers(), API.getGroupMembers(groupId)]);
+  const memberIds = new Set(members.map(m => m.id));
+
+  const rows = users
+    .slice()
+    .sort((a, b) => (memberIds.has(b.id) - memberIds.has(a.id)) || a.display_name.localeCompare(b.display_name))
+    .map(u => {
+      const isMember = memberIds.has(u.id);
+      const btnClass = isMember ? 'btn-danger' : 'btn-primary';
+      return `<div class="modal-user-row${isMember ? ' is-member' : ''}">
+        <span>👤 ${escapeHtml(u.display_name)}
+          ${isMember ? '<span class="member-tag">✓ member</span>' : ''}
+        </span>
+        <button class="btn btn-sm ${btnClass}" data-toggle-membership="${u.id}" data-gid="${groupId}" data-member="${isMember}">
+          ${isMember ? 'Remove' : '+ Add'}
+        </button>
+      </div>`;
+    }).join('');
+
+  const html = `<div class="member-summary">${members.length} of ${users.length} users are in this group</div>
+    <div style="max-height:300px;overflow-y:auto">
+      ${rows || '<div class="empty">No users</div>'}
     </div>`;
-  });
-  html += '</div>';
 
-  showModal(`Manage Group`, html, () => hideModal());
+  showModal('Manage Group', html, () => hideModal());
 
-  // Wire buttons
+  // Wire the single add/remove toggle button
   setTimeout(() => {
-    document.querySelectorAll('[data-add-user]').forEach(btn => {
+    document.querySelectorAll('[data-toggle-membership]').forEach(btn => {
       btn.onclick = async () => {
+        const userId = parseInt(btn.dataset.toggleMembership);
+        const isMember = btn.dataset.member === 'true';
         try {
-          await API.addUserToGroup(parseInt(btn.dataset.addUser), parseInt(btn.dataset.gid));
-          hideModal();
-          showGroupManage(groupId, groupName);
-        } catch (e) { alert('Error: ' + e.message); }
-      };
-    });
-    document.querySelectorAll('[data-remove-user]').forEach(btn => {
-      btn.onclick = async () => {
-        try {
-          await API.removeUserFromGroup(parseInt(btn.dataset.removeUser), parseInt(btn.dataset.gid));
+          if (isMember) {
+            await API.removeUserFromGroup(userId, groupId);
+          } else {
+            await API.addUserToGroup(userId, groupId);
+          }
           hideModal();
           showGroupManage(groupId, groupName);
         } catch (e) { alert('Error: ' + e.message); }

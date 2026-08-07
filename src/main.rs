@@ -257,6 +257,7 @@ async fn main() {
         .route("/api/admin/groups", get(api::admin::list_groups))
         .route("/api/admin/groups", post(api::admin::create_group))
         .route("/api/admin/groups/{id}", delete(api::admin::delete_group))
+        .route("/api/admin/groups/{id}/members", get(api::admin::list_group_members))
         .route("/api/admin/groups/add-user", post(api::admin::add_user_to_group))
         .route("/api/admin/groups/remove-user", post(api::admin::remove_user_from_group))
         .route("/api/admin/acl", get(api::admin::list_acl))

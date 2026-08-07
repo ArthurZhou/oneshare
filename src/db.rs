@@ -168,13 +168,19 @@ impl Database {
 
     pub fn list_groups(&self) -> Result<Vec<GroupRow>, rusqlite::Error> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT id, name, description FROM groups_ ORDER BY name")?;
+        let mut stmt = conn.prepare(
+            "SELECT g.id, g.name, g.description, COUNT(ug.user_id)
+             FROM groups_ g
+             LEFT JOIN user_groups ug ON ug.group_id = g.id
+             GROUP BY g.id ORDER BY g.name",
+        )?;
         let rows = stmt
             .query_map([], |row| {
                 Ok(GroupRow {
                     id: row.get(0)?,
                     name: row.get(1)?,
                     description: row.get(2)?,
+                    member_count: row.get(3)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -192,6 +198,7 @@ impl Database {
             id,
             name: name.into(),
             description: Some(description.into()),
+            member_count: 0,
         })
     }
 
@@ -233,6 +240,28 @@ impl Database {
             .query_map(params![user_id], |row| row.get(0))?
             .collect::<Result<Vec<i64>, _>>()?;
         Ok(ids)
+    }
+
+    pub fn list_group_members(&self, group_id: i64) -> Result<Vec<UserRow>, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT u.id, u.oidc_sub, u.display_name, u.email, u.is_admin
+             FROM user_groups ug
+             JOIN users u ON u.id = ug.user_id
+             WHERE ug.group_id = ? ORDER BY u.display_name",
+        )?;
+        let rows = stmt
+            .query_map(params![group_id], |row| {
+                Ok(UserRow {
+                    id: row.get(0)?,
+                    oidc_sub: row.get(1)?,
+                    display_name: row.get(2)?,
+                    email: row.get(3)?,
+                    is_admin: row.get(4)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
     }
 
     pub fn list_users(&self) -> Result<Vec<UserRow>, rusqlite::Error> {
@@ -277,14 +306,16 @@ impl Database {
         Ok(())
     }
 
-    pub fn get_acl_for_path(&self, path: &str) -> Result<Vec<AclEntryRow>, rusqlite::Error> {
+    /// All ACL entries. Exact/ancestor matching and path normalization are done
+    /// in memory by the permission engine so LIKE wildcards in real file names
+    /// can't leak permissions and stored paths may use either leading-slash form.
+    pub fn list_acl_entries(&self) -> Result<Vec<AclEntryRow>, rusqlite::Error> {
         let conn = self.conn.lock().unwrap();
-        // Match exact path or parent paths
         let mut stmt = conn.prepare(
-            "SELECT id, path, user_id, group_id, permission FROM acl_entries WHERE ?1 LIKE path || '%' ORDER BY length(path) DESC",
+            "SELECT id, path, user_id, group_id, permission FROM acl_entries ORDER BY length(path) DESC, id",
         )?;
         let rows = stmt
-            .query_map(params![path], |row| {
+            .query_map([], |row| {
                 Ok(AclEntryRow {
                     id: row.get(0)?,
                     path: row.get(1)?,
@@ -357,6 +388,7 @@ pub struct GroupRow {
     pub id: i64,
     pub name: String,
     pub description: Option<String>,
+    pub member_count: i64,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
