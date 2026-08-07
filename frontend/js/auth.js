@@ -20,7 +20,7 @@ function updateUserUI() {
   if (currentUser) {
     el.innerHTML = `
       <span>👤 ${escapeHtml(currentUser.display_name)}</span>
-      ${currentUser.is_admin ? '<span style="color:#7c3aed;font-size:0.8em">(admin)</span>' : ''}
+      ${currentUser.is_admin ? '<span class="admin-tag">(admin)</span>' : ''}
       <a href="/auth/logout" class="btn btn-sm">Logout</a>
     `;
     // Show/hide admin button

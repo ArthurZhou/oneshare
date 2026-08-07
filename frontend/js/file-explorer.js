@@ -49,9 +49,9 @@ function renderFiles(data) {
   let html = `
     <div class="file-row header">
       <div class="file-icon"></div>
-      <div class="file-name" style="font-weight:600;color:#94a3b8;font-size:0.8em">Name</div>
-      <div class="file-size" style="font-weight:600;color:#94a3b8;font-size:0.8em">Size</div>
-      <div class="file-mtime" style="font-weight:600;color:#94a3b8;font-size:0.8em">Modified</div>
+      <div class="file-name">Name</div>
+      <div class="file-size">Size</div>
+      <div class="file-mtime">Modified</div>
       <div class="file-actions"></div>
     </div>`;
 
@@ -267,7 +267,7 @@ function showMoveModal(file) {
 function showDeleteConfirm(file) {
   showModal('Delete', `
     <p>Are you sure you want to delete "${escapeHtml(file.name)}"?</p>
-    ${file.isDir ? '<p style="color:#fca5a5;font-size:0.85em">This will delete the entire folder and all its contents!</p>' : ''}
+    ${file.isDir ? '<p style="color:var(--error);font-size:0.85em">This will delete the entire folder and all its contents!</p>' : ''}
   `, async () => {
     try {
       await API.deleteFile(file.path);

@@ -35,7 +35,7 @@ async function renderAclPanel() {
     const target = entry.user_name || entry.group_name || '?';
     const icon = entry.user_id ? '👤' : '👥';
     rows += `<div class="admin-acl-row">
-      <div>📂 ${escapeHtml(entry.path)} &nbsp; ${icon} ${escapeHtml(target)} &nbsp; <span style="color:#60a5fa">${entry.permission}</span></div>
+      <div>📂 ${escapeHtml(entry.path)} &nbsp; ${icon} ${escapeHtml(target)} &nbsp; <span class="perm">${entry.permission}</span></div>
       <button class="btn btn-sm btn-danger" data-remove-acl="${entry.id}">×</button>
     </div>`;
   });
@@ -106,7 +106,7 @@ async function renderGroupsPanel() {
   });
 
   return `
-    <div style="margin-bottom:12px;display:flex;gap:8px">
+    <div class="admin-form-row">
       <input type="text" id="group-name" placeholder="Group name" style="flex:1">
       <input type="text" id="group-desc" placeholder="Description" style="flex:1">
       <button class="btn btn-primary btn-sm" id="group-create">Create</button>
@@ -151,7 +151,7 @@ async function showGroupManage(groupId, groupName) {
   let html = `<h3 style="margin-bottom:12px">Manage: ${escapeHtml(groupName)}</h3>`;
   html += '<div style="max-height:300px;overflow-y:auto">';
   users.forEach(u => {
-    html += `<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid #334155">
+    html += `<div class="modal-user-row">
       <span>👤 ${escapeHtml(u.display_name)}</span>
       <div>
         <button class="btn btn-sm" data-add-user="${u.id}" data-gid="${groupId}">+ Add</button>
@@ -192,8 +192,8 @@ async function renderUsersPanel() {
   const users = await API.getUsers();
   let rows = users.map(u => `
     <div class="admin-user-row">
-      <div>👤 <strong>${escapeHtml(u.display_name)}</strong> ${u.email ? `(${escapeHtml(u.email)})` : ''} ${u.is_admin ? '<span style="color:#a78bfa">[admin]</span>' : ''}</div>
-      <div style="color:#64748b;font-size:0.8em">ID: ${u.id}</div>
+      <div>👤 <strong>${escapeHtml(u.display_name)}</strong> ${u.email ? `(${escapeHtml(u.email)})` : ''} ${u.is_admin ? '<span class="admin-tag">[admin]</span>' : ''}</div>
+      <div style="color:var(--muted);font-size:0.8em">ID: ${u.id}</div>
     </div>
   `).join('');
   return rows || '<div class="empty">No users</div>';
