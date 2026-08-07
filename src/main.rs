@@ -5,6 +5,7 @@ mod config;
 mod db;
 mod libtoken;
 mod models;
+mod statics;
 
 use crate::auth::oidc::OidcClient;
 use crate::auth::session::SessionManager;
@@ -28,8 +29,6 @@ use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use tower::{Layer, Service, ServiceBuilder};
 use tower_http::cors::CorsLayer;
-use tower_http::services::ServeDir;
-use tower_http::set_header::SetResponseHeaderLayer;
 
 pub struct AppState {
     pub db: Database,
@@ -291,16 +290,11 @@ async fn main() {
         // own path match is the only one its `Path` extractor sees.
         .route("/file/{*path}", any_service(FreshPathParams::new(libfw_app.clone())))
         .route("/dir/{*path}", any_service(FreshPathParams::new(libfw_app)))
-        // Serve the frontend with revalidation: without a Cache-Control header,
-        // browsers heuristically cache JS/CSS, which caused stale `app.js` to be
-        // mixed with a newer `file-explorer.js` (and a spurious upload error).
-        .fallback_service(
-            SetResponseHeaderLayer::overriding(
-                axum::http::header::CACHE_CONTROL,
-                axum::http::HeaderValue::from_static("no-cache, must-revalidate"),
-            )
-            .layer(ServeDir::new("./frontend")),
-        )
+        // Frontend fallback: debug builds serve the loose ./frontend directory
+        // (with revalidation so browsers never cache stale JS/CSS during dev);
+        // release builds serve the minified assets embedded by build.rs. See
+        // src/statics.rs.
+        .fallback_service(crate::statics::frontend_router())
         .layer(CorsLayer::permissive())
         .with_state(state);
 

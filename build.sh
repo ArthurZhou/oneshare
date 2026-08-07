@@ -3,6 +3,8 @@
 # OneShare release build — produces a fully static musl binary.
 #
 # Requires:
+#   - pnpm (to build the minified frontend into ../static, which the release
+#     binary embeds via include_str!)
 #   - Rust toolchain with the musl target installed:
 #       rustup target add x86_64-unknown-linux-musl
 #   - musl-gcc (package `musl-tools`)
@@ -15,6 +17,11 @@
 set -euo pipefail
 
 TARGET="${TARGET:-x86_64-unknown-linux-musl}"
+
+# Build the minified frontend first (Vite -> ../static). The release binary
+# embeds these files, so they must always be up to date before cargo links.
+echo ">> Building frontend (Vite -> ../static)"
+(cd frontend && pnpm install --frozen-lockfile && pnpm build)
 
 # aws-lc-sys / ring must be compiled with a C toolchain that targets musl.
 export CC="${CC:-musl-gcc}"

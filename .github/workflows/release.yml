@@ -17,10 +17,28 @@ jobs:
         with:
           fetch-depth: 0
 
-      # The OneShare frontend is plain static HTML/CSS/JS (no package.json /
-      # Node build step), so there is nothing to compile here — the files under
-      # ./frontend are bundled directly into the release asset below, next to
-      # the binary (the server serves them via ServeDir::new("./frontend")).
+      # The frontend is minified by Vite (pnpm build) and embedded into the
+      # binary at compile time (include_str! in src/statics.rs, release profile
+      # only). There is no loose webpage to ship anymore, so the release asset
+      # is the single stripped binary (no tar.gz).
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          # Match local: pnpm 11 reads allowBuilds from frontend/pnpm-workspace.yaml
+          # (needed so esbuild's postinstall runs in CI).
+          version: 11
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Build frontend (Vite)
+        working-directory: frontend
+        run: pnpm install --frozen-lockfile && pnpm build
 
       - name: Set up Rust (musl target)
         uses: dtolnay/rust-toolchain@stable
@@ -41,14 +59,9 @@ jobs:
           set -euxo pipefail
           BIN="target/x86_64-unknown-linux-musl/release/oneshare"
           VERSION="${{ github.event.release.tag_name }}"
-          ASSET="oneshare-${VERSION//\//-}-x86_64-unknown-linux-musl.tar.gz"
-          mkdir -p dist/oneshare
+          ASSET="oneshare-${VERSION//\//-}-x86_64-unknown-linux-musl"
           strip "$BIN" || true
-          cp "$BIN" dist/oneshare/oneshare
-          cp -r frontend dist/oneshare/frontend
-          cp config.example.toml dist/oneshare/config.example.toml
-          cp README.md dist/oneshare/README.md
-          tar -C dist -czf "$ASSET" oneshare
+          cp "$BIN" "$ASSET"
           echo "ASSET_NAME=$ASSET" >> "$GITHUB_ENV"
 
       - name: Upload Release Asset

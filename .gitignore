@@ -1,6 +1,9 @@
 # Rust build artifacts
 target/
 
+# Minified frontend build output (produced by `cd frontend && pnpm build`)
+/static/
+
 # Data directory (runtime files)
 data/
 

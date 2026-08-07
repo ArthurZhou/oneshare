@@ -29,9 +29,21 @@ cp config.example.toml config.toml
 
 ### 2. Build and run
 
+The frontend is vanilla JS in `frontend/`. Debug builds serve it straight from
+disk (no build step); release builds minify it with Vite and embed the result
+into the binary.
+
 ```bash
+# Debug — serves ./frontend from disk, no frontend build needed
+cargo run
+
+# Release — Vite minifies the frontend into ../static, which is embedded
+cd frontend && pnpm install && pnpm build
+cd ..
 cargo run --release
 ```
+
+(`./build.sh` builds the frontend automatically before the musl release build.)
 
 ### 3. Access
 

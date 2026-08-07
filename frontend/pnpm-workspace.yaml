@@ -1,0 +1,3 @@
+# pnpm 11: allow esbuild's postinstall so its platform binary is wired up.
+allowBuilds:
+  esbuild: true
