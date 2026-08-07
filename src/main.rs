@@ -120,10 +120,29 @@ where
         }
 
         let path = req.uri().path().to_owned();
-        let stripped = if path == self.prefix {
-            // "/oneshare" -> "/"
-            Some("/".to_owned())
-        } else if let Some(rest) = path.strip_prefix(&self.prefix_with_slash) {
+        let query = req
+            .uri()
+            .query()
+            .map(|q| format!("?{q}"))
+            .unwrap_or_default();
+
+        // The bare prefix path must redirect to the trailing-slash form.
+        // index.html loads its assets with RELATIVE paths (css/style.css,
+        // js/*.js, config.js), so from "/oneshare" the browser would resolve
+        // them against the domain root and 404. "/oneshare/" keeps them under
+        // the prefix where they actually exist.
+        if path == self.prefix {
+            let location = format!("{}{}", self.prefix_with_slash, query);
+            return Box::pin(async move {
+                Ok(Response::builder()
+                    .status(StatusCode::PERMANENT_REDIRECT)
+                    .header(axum::http::header::LOCATION, location)
+                    .body(Body::empty())
+                    .unwrap())
+            });
+        }
+
+        let stripped = if let Some(rest) = path.strip_prefix(&self.prefix_with_slash) {
             // "/oneshare/css/style.css" -> "/css/style.css"
             Some(format!("/{rest}"))
         } else {
