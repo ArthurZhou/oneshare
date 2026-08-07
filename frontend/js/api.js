@@ -1,13 +1,15 @@
 // API client for OneShare backend
 const API = {
-  base: '',
+  // URL prefix the app is mounted under (set by the server-served config.js).
+  // Empty string means the domain root. Never has a trailing slash.
+  base: ((typeof window.ONESHARE_BASE === 'string' && window.ONESHARE_BASE) || '').replace(/\/+$/, ''),
 
   async fetch(url, opts = {}) {
     const res = await fetch(this.base + url, { ...opts, credentials: 'same-origin' });
     if (!res.ok) {
       if (res.status === 401) {
-        // Redirect to login
-        window.location.href = '/auth/login';
+        // Redirect to login (respecting the configured URL prefix)
+        window.location.href = `${this.base}/auth/login`;
         throw new Error('Unauthorized');
       }
       if (res.status === 403) {
@@ -38,7 +40,7 @@ const API = {
 
   // ── libfw Directory listing (bearer token) ──
   listDir: (path, token) => {
-    const url = `/dir/${encodeURIComponent(path)}`;
+    const url = `${API.base}/dir/${encodeURIComponent(path)}`;
     return fetch(url, { headers: { 'Authorization': `Bearer ${token}` } }).then(res => {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       return res.json();

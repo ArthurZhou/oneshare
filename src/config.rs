@@ -15,6 +15,11 @@ pub struct ServerConfig {
     pub database_url: String,
     pub session_cookie_key: String,
     pub hmac_secret: String,
+    /// Optional URL prefix (base path) so OneShare can be served behind a
+    /// reverse proxy under a sub-path of a shared domain, e.g. "/oneshare".
+    /// Empty or "/" means the app is served at the domain root.
+    #[serde(default)]
+    pub base_url: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -64,5 +69,29 @@ impl Config {
 
     pub fn hmac_secret(&self) -> &str {
         &self.server.hmac_secret
+    }
+
+    /// Normalized URL prefix (base path). Empty string (or "/") means the app
+    /// is served at the domain root; otherwise a leading "/" is added and any
+    /// trailing "/" removed, e.g. "/oneshare". Never returns a trailing slash.
+    pub fn base_url(&self) -> String {
+        let b = self.server.base_url.trim();
+        if b.is_empty() || b == "/" {
+            String::new()
+        } else {
+            format!("/{}", b.trim_matches('/'))
+        }
+    }
+
+    /// Absolute path to redirect the browser to after login/logout. At the
+    /// root prefix this is "/"; under a prefix it is the prefix itself, so the
+    /// browser lands back on the app's home page, e.g. "/oneshare".
+    pub fn redirect_after_auth(&self) -> String {
+        let base = self.base_url();
+        if base.is_empty() {
+            "/".to_string()
+        } else {
+            base
+        }
     }
 }

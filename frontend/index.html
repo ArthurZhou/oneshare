@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>OneShare - File Sharing</title>
-<link rel="stylesheet" href="/css/style.css">
+<link rel="stylesheet" href="css/style.css">
 </head>
 <body>
 <header id="header">
@@ -14,7 +14,7 @@
   </div>
   <div class="header-right">
     <div id="user-info" class="user-info">
-      <a href="/auth/login" class="btn btn-sm">Login</a>
+      <a href="auth/login" class="btn btn-sm">Login</a>
     </div>
   </div>
 </header>
@@ -92,10 +92,15 @@
 <input type="file" id="file-input" multiple style="display:none">
 <input type="file" id="folder-input" webkitdirectory style="display:none">
 
-<script src="/js/api.js"></script>
-<script src="/js/auth.js"></script>
-<script src="/js/file-explorer.js"></script>
-<script src="/js/admin.js"></script>
-<script src="/js/app.js"></script>
+<!-- Asset paths are relative so the frontend works at the domain root or under
+     any URL prefix (e.g. /oneshare) without server-side HTML templating.
+     config.js is served dynamically by the backend and sets window.ONESHARE_BASE
+     so the client can build absolute API/file URLs under the prefix. -->
+<script src="config.js"></script>
+<script src="js/api.js"></script>
+<script src="js/auth.js"></script>
+<script src="js/file-explorer.js"></script>
+<script src="js/admin.js"></script>
+<script src="js/app.js"></script>
 </body>
 </html>

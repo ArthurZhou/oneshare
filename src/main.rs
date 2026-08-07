@@ -12,6 +12,8 @@ use crate::config::Config;
 use crate::db::Database;
 use crate::libtoken::OneshareTokenVerifier;
 use axum::{
+    body::Body,
+    http::{Request, Response, StatusCode, Uri},
     routing::{any_service, delete, get, post, put},
     Router,
 };
@@ -19,9 +21,12 @@ use libfw_core::auth::PathValidator;
 use libfw_core::compress::CompressionFormat;
 use libfw_server::{router as libfw_router, FsStorage, ServerState};
 use std::collections::HashMap;
+use std::convert::Infallible;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
-use tower::{Layer, Service};
+use tower::{Layer, Service, ServiceBuilder};
 use tower_http::cors::CorsLayer;
 use tower_http::services::ServeDir;
 use tower_http::set_header::SetResponseHeaderLayer;
@@ -71,6 +76,118 @@ where
         // Fresh extensions drop the outer router's captured path params.
         parts.extensions = axum::http::Extensions::new();
         self.inner.call(axum::http::Request::from_parts(parts, body))
+    }
+}
+
+/// Strips a URL prefix from incoming request paths before forwarding to the
+/// inner router, and answers 404 for paths outside the prefix so the rest of
+/// the domain (other apps behind the same reverse proxy) is untouched.
+///
+/// This is used instead of `Router::nest` because axum's `nest` cannot route
+/// the nested router's frontend fallback for the bare prefix path (`/prefix`
+/// and `/prefix/`): matchit's `{*rest}` requires at least one segment, so the
+/// static frontend at the app root would 404. Stripping the path keeps every
+/// route, the libfw `/file` and `/dir` transfer endpoints, and the ServeDir
+/// fallback working exactly as they do at the domain root. An empty prefix is
+/// a no-op (the app is served at the domain root).
+#[derive(Clone)]
+struct PrefixStrip<S> {
+    inner: S,
+    prefix: String,
+    prefix_with_slash: String,
+}
+
+impl<S> Service<Request<Body>> for PrefixStrip<S>
+where
+    S: Service<Request<Body>, Response = Response<Body>, Error = Infallible>
+        + Clone
+        + Send
+        + 'static,
+    S::Future: Send + 'static,
+{
+    type Response = S::Response;
+    type Error = S::Error;
+    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
+
+    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        self.inner.poll_ready(cx)
+    }
+
+    fn call(&mut self, mut req: Request<Body>) -> Self::Future {
+        // No prefix configured: pass through unchanged (domain-root serving).
+        if self.prefix.is_empty() {
+            return Box::pin(self.inner.call(req));
+        }
+
+        let path = req.uri().path().to_owned();
+        let stripped = if path == self.prefix {
+            // "/oneshare" -> "/"
+            Some("/".to_owned())
+        } else if let Some(rest) = path.strip_prefix(&self.prefix_with_slash) {
+            // "/oneshare/css/style.css" -> "/css/style.css"
+            Some(format!("/{rest}"))
+        } else {
+            // Outside the prefix: leave it for the rest of the domain.
+            None
+        };
+
+        let stripped = match stripped {
+            Some(p) => p,
+            None => {
+                return Box::pin(async {
+                    Ok(Response::builder()
+                        .status(StatusCode::NOT_FOUND)
+                        .body(Body::empty())
+                        .unwrap())
+                });
+            }
+        };
+
+        // Rewrite the request URI (path + query) so axum routes on the
+        // unprefixed path.
+        let uri = req.uri().clone();
+        let mut parts = uri.clone().into_parts();
+        let path_and_query = match uri.path_and_query() {
+            Some(pq) => match pq.query() {
+                Some(q) if !q.is_empty() => format!("{stripped}?{q}"),
+                _ => stripped.clone(),
+            },
+            None => stripped.clone(),
+        };
+        parts.path_and_query = Some(
+            path_and_query
+                .parse()
+                .expect("stripped path is a valid path-and-query"),
+        );
+        *req.uri_mut() = Uri::from_parts(parts).expect("valid stripped uri");
+
+        Box::pin(self.inner.call(req))
+    }
+}
+
+#[derive(Clone)]
+struct PrefixStripLayer {
+    prefix: String,
+    prefix_with_slash: String,
+}
+
+impl PrefixStripLayer {
+    fn new(prefix: &str) -> Self {
+        Self {
+            prefix: prefix.to_owned(),
+            prefix_with_slash: format!("{prefix}/"),
+        }
+    }
+}
+
+impl<S> Layer<S> for PrefixStripLayer {
+    type Service = PrefixStrip<S>;
+    fn layer(&self, inner: S) -> Self::Service {
+        PrefixStrip {
+            inner,
+            prefix: self.prefix.clone(),
+            prefix_with_slash: self.prefix_with_slash.clone(),
+        }
     }
 }
 
@@ -145,6 +262,10 @@ async fn main() {
         .route("/api/admin/acl", get(api::admin::list_acl))
         .route("/api/admin/acl", post(api::admin::set_acl))
         .route("/api/admin/acl/{id}", delete(api::admin::remove_acl))
+        // Frontend bootstrap config: tells the browser what URL prefix the app
+        // is mounted under (window.ONESHARE_BASE), so the client can build
+        // absolute URLs when served behind a reverse proxy on a shared domain.
+        .route("/config.js", get(api::config_js))
         // libfw file transfer routes (uses its own state, embedded via any_service).
         // FreshPathParams clears the outer router's `{*path}` captures so libfw's
         // own path match is the only one its `Path` extractor sees.
@@ -163,9 +284,25 @@ async fn main() {
         .layer(CorsLayer::permissive())
         .with_state(state);
 
+    // Support running behind a reverse proxy on a shared domain: when a URL
+    // prefix is configured (e.g. base_url = "/oneshare"), strip it from every
+    // request before routing. This keeps all routes, the libfw /file and /dir
+    // transfer endpoints, and the static frontend fallback working exactly as
+    // they do at the domain root — including the bare prefix path, which axum's
+    // `nest` cannot route to the frontend fallback. Requests outside the prefix
+    // get 404 so other apps on the same domain are untouched. With an empty
+    // prefix the middleware is a no-op (domain-root serving).
+    let base = config.base_url();
+    let app = ServiceBuilder::new()
+        .layer(PrefixStripLayer::new(&base))
+        .service(app);
+
     let addr = format!("{}:{}", config.listen_addr(), config.listen_port());
     tracing::info!("OneShare starting on http://{}", addr);
+    tracing::info!("OneShare URL prefix (base path): {:?}", base);
 
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
-    axum::serve(listener, app).await.unwrap();
+    axum::serve(listener, tower::make::Shared::new(app))
+        .await
+        .unwrap();
 }

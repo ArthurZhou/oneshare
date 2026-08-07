@@ -16,8 +16,9 @@ pub struct CallbackQuery {
     pub state: Option<String>,
 }
 
-/// Helper: build an HTML error page that shows the error and provides a "back to login" link
-fn error_page(status: StatusCode, title: &str, message: &str) -> Response {
+/// Helper: build an HTML error page that shows the error and provides a "back to login" link.
+/// `base` is the configured URL prefix (may be empty for domain-root serving).
+fn error_page(status: StatusCode, base: &str, title: &str, message: &str) -> Response {
     let body = format!(
         r#"<!DOCTYPE html>
 <html lang="en">
@@ -49,13 +50,14 @@ fn error_page(status: StatusCode, title: &str, message: &str) -> Response {
   <h1>?? {title}</h1>
   <div class="msg">{message}</div>
   <div class="detail">Status: {status_code}</div>
-  <a class="btn" href="/auth/login">? Retry Login</a>
+  <a class="btn" href="{base}/auth/login">? Retry Login</a>
 </div>
 </body>
 </html>"#,
         title = title,
         message = message,
         status_code = status.as_u16(),
+        base = base,
     );
 
     Response::builder()
@@ -103,6 +105,7 @@ pub async fn callback(
             );
             return error_page(
                 StatusCode::BAD_REQUEST,
+                &state.config.base_url(),
                 "Missing State Parameter",
                 "The OIDC provider did not return a valid state parameter. \
                  This could be due to a misconfigured OIDC provider or a CSRF attack. \
@@ -131,6 +134,7 @@ pub async fn callback(
         );
         return error_page(
             StatusCode::BAD_REQUEST,
+            &state.config.base_url(),
             "Invalid State",
             "The login session has expired or the state token is invalid. \
              This happens if: \
@@ -158,6 +162,7 @@ pub async fn callback(
             tracing::error!("OIDC callback: token exchange failed: {}", e);
             return error_page(
                 StatusCode::UNAUTHORIZED,
+                &state.config.base_url(),
                 "Login Failed",
                 &format!(
                     "Failed to complete login with the OIDC provider. \
@@ -192,6 +197,7 @@ pub async fn callback(
             );
             return error_page(
                 StatusCode::INTERNAL_SERVER_ERROR,
+                &state.config.base_url(),
                 "Database Error",
                 &format!(
                     "Failed to save user information to the database. \
@@ -217,6 +223,7 @@ pub async fn callback(
             );
             return error_page(
                 StatusCode::INTERNAL_SERVER_ERROR,
+                &state.config.base_url(),
                 "Session Error",
                 &format!(
                     "Failed to create a login session. \
@@ -227,8 +234,9 @@ pub async fn callback(
         }
     };
 
-    // Step 5: build redirect response with session cookie
-    (new_jar, Redirect::to("/")).into_response()
+    // Step 5: build redirect response with session cookie. Land the browser on
+    // the app home (respecting the configured URL prefix, if any).
+    (new_jar, Redirect::to(&state.config.redirect_after_auth())).into_response()
 }
 pub async fn logout(
     State(state): State<Arc<AppState>>,
@@ -247,7 +255,7 @@ pub async fn logout(
         .session_manager
         .remove_session(jar, &state.db, &session_id);
 
-    (jar, Redirect::to("/")).into_response()
+    (jar, Redirect::to(&state.config.redirect_after_auth())).into_response()
 }
 
 pub async fn me(

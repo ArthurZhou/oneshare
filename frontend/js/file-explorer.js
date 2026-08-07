@@ -144,7 +144,7 @@ async function handleContextAction(action, file) {
 async function downloadFile(path) {
   try {
     const tokenResp = await API.getToken(path, 'read');
-    const downloadUrl = `/file/${encodeURIComponent(path)}`;
+    const downloadUrl = `${API.base}/file/${encodeURIComponent(path)}`;
 
     const res = await fetch(downloadUrl, {
       headers: { 'Authorization': `Bearer ${tokenResp.token}` },
@@ -173,7 +173,7 @@ async function downloadFolder(path, name) {
     if (window.showDirectoryPicker) {
       const rootHandle = await window.showDirectoryPicker();
       for (const f of files) {
-        const res = await fetch(`/file/${encodeURIComponent(f.path)}`, {
+        const res = await fetch(`${API.base}/file/${encodeURIComponent(f.path)}`, {
           headers: { 'Authorization': `Bearer ${tokenResp.token}` },
         });
         if (!res.ok) throw new Error(`Failed to download ${f.path}: HTTP ${res.status}`);
@@ -196,7 +196,7 @@ async function downloadFolder(path, name) {
     // Fallback: pack the folder into a store-only ZIP archive.
     const entries = [];
     for (const f of files) {
-      const res = await fetch(`/file/${encodeURIComponent(f.path)}`, {
+      const res = await fetch(`${API.base}/file/${encodeURIComponent(f.path)}`, {
         headers: { 'Authorization': `Bearer ${tokenResp.token}` },
       });
       if (!res.ok) throw new Error(`Failed to download ${f.path}: HTTP ${res.status}`);
@@ -333,7 +333,7 @@ async function handleUpload(input) {
 
       await new Promise((resolve, reject) => {
         const xhr = new XMLHttpRequest();
-        xhr.open('POST', `/file/${encodeURIComponent(uploadPath)}`, true);
+        xhr.open('POST', `${API.base}/file/${encodeURIComponent(uploadPath)}`, true);
         xhr.setRequestHeader('Authorization', `Bearer ${tokenResp.token}`);
         // HTTP header values must be Latin-1; URL-encode the path so non-ASCII
         // (e.g. Chinese) filenames don't break setRequestHeader. The server

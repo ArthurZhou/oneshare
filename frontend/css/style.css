@@ -39,7 +39,7 @@
 
 @font-face {
   font-family: sarasa;
-  src: url('/font.woff')
+  src: url('font.woff')
 }
 
 /* ── Reset & base ── */

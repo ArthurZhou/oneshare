@@ -8,6 +8,9 @@ root_dir = "./data"
 database_url = "oneshare.db"
 session_cookie_key = "0123456789abcdef0123456789abcdef"
 hmac_secret = "change-me-to-a-random-32-byte-secret"
+# URL prefix (base path) when running behind a reverse proxy on a shared
+# domain, e.g. "/oneshare". Leave empty to serve at the domain root.
+base_url = ""
 
 [oidc]
 issuer_url = "https://login.example.com"
