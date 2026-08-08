@@ -24,8 +24,8 @@ hmac = "0.12"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 mime_guess = "2"
-libfw-core = "0.1"
-libfw-server = "0.1"
+libfw-core = "0.1.2"
+libfw-server = "0.1.2"
 # reqwest uses rustls for TLS. We supply the crypto provider ourselves: use
 # `rustls-no-provider` + a direct `rustls` dep on `ring` instead of the default
 # `aws-lc-rs`, so the build needs only a C compiler + perl (no cmake).

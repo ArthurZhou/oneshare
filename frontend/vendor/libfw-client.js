@@ -17,7 +17,7 @@ var LibfwClient = (() => {
   };
   var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
 
-  // node_modules/.pnpm/libfw-client@0.1.0/node_modules/libfw-client/index.js
+  // node_modules/.pnpm/libfw-client@0.1.2/node_modules/libfw-client/index.js
   var libfw_client_exports = {};
   __export(libfw_client_exports, {
     LibfwClient: () => LibfwClient2,
@@ -25,12 +25,13 @@ var LibfwClient = (() => {
     default: () => libfw_client_default
   });
 
-  // node_modules/.pnpm/libfw-client@0.1.0/node_modules/libfw-client/pkg/libfw_client.js
+  // node_modules/.pnpm/libfw-client@0.1.2/node_modules/libfw-client/pkg/libfw_client.js
   var import_meta = {};
   // This UMD bundle was built from an ESM module, so `import.meta` is not
-  // available in a classic <script>. Derive this script's own URL so the
-  // adjacent WASM engine (`libfw_client_bg.wasm`) resolves next to it under
-  // any URL prefix (the SDK does `new URL("libfw_client_bg.wasm", import_meta.url)`).
+  // available in a classic <script> (esbuild warns it will be empty). Derive
+  // this script's own URL so the adjacent WASM engine (`libfw_client_bg.wasm`)
+  // resolves next to it under any URL prefix (the SDK does
+  // `new URL("libfw_client_bg.wasm", import_meta.url)`).
   import_meta.url = (function () {
     if (typeof document === "undefined") return "";
     if (document.currentScript && document.currentScript.src) return document.currentScript.src;
@@ -63,6 +64,25 @@ var LibfwClient = (() => {
      */
     done_bytes() {
       const ret = wasm.libfwclient_done_bytes(this.__wbg_ptr);
+      return ret;
+    }
+    /**
+     * Download a single file at `file_path` into the chosen local directory.
+     *
+     * Resolves with the number of bytes written.
+     * @param {string} base_url
+     * @param {string} token
+     * @param {string} file_path
+     * @returns {Promise<any>}
+     */
+    download_file(base_url, token, file_path) {
+      const ptr0 = passStringToWasm0(base_url, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+      const len0 = WASM_VECTOR_LEN;
+      const ptr1 = passStringToWasm0(token, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+      const len1 = WASM_VECTOR_LEN;
+      const ptr2 = passStringToWasm0(file_path, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+      const len2 = WASM_VECTOR_LEN;
+      const ret = wasm.libfwclient_download_file(this.__wbg_ptr, ptr0, len0, ptr1, len1, ptr2, len2);
       return ret;
     }
     /**
@@ -753,7 +773,7 @@ ${val.stack}`;
     return __wbg_finalize_init(instance, module);
   }
 
-  // node_modules/.pnpm/libfw-client@0.1.0/node_modules/libfw-client/index.js
+  // node_modules/.pnpm/libfw-client@0.1.2/node_modules/libfw-client/index.js
   var IDB_NAME = "libfw";
   var IDB_STORE = "resume";
   var LibfwError = class extends Error {
@@ -801,10 +821,7 @@ ${val.stack}`;
         return await new Promise((resolve, reject) => {
           const tx = db.transaction(IDB_STORE, "readonly");
           const req = tx.objectStore(IDB_STORE).get(path);
-          req.onsuccess = () => {
-            var _a;
-            return resolve((_a = req.result) != null ? _a : null);
-          };
+          req.onsuccess = () => resolve(req.result ?? null);
           req.onerror = () => reject(new LibfwError(`idb get: ${req.error}`, "idb"));
         });
       } catch (err) {
@@ -904,15 +921,10 @@ ${val.stack}`;
       return {
         onFileStart: (path, size) => this._emit({ type: "fileStart", path, done: 0, total: size }),
         onWriteChunk: (path, offset, data) => this._onWriteChunk(path, offset, data),
-        onFileCompleted: (path) => {
-          // Commit the buffered bytes to disk before reporting the file done.
-          this._finalizeFile(path).catch(() => {
-          });
-          this._emit({ type: "fileCompleted", path });
-        },
+        onFileCompleted: (path) => this._onFileCompleted(path),
         onProgress: (done, total) => this._emit({ type: "progress", done, total }),
-        loadState: (path) => Idb.loadState(path),
-        saveState: (path, state) => Idb.saveState(path, state),
+        loadState: (direction, path) => Idb.loadState(`${direction}:${path}`),
+        saveState: (direction, path, state) => Idb.saveState(`${direction}:${path}`, state),
         getFileList: () => this._getFileList(),
         readFile: (path, offset, length) => this._readFile(path, offset, length),
         log: (msg) => {
@@ -925,7 +937,7 @@ ${val.stack}`;
       if (typeof this._options.onEvent === "function") {
         try {
           this._options.onEvent(event);
-        } catch (e) {
+        } catch {
         }
       }
     }
@@ -958,6 +970,35 @@ ${val.stack}`;
       }
     }
     /**
+     * Download a single file from the server at `filePath` into a local
+     * directory chosen via `showDirectoryPicker()`.
+     *
+     * @param {string} token bearer token
+     * @param {string} filePath virtual server path of the file to download
+     * @returns {Promise<number>} total bytes written
+     * @throws {LibfwError}
+     */
+    async downloadFile(token, filePath) {
+      const engine = await this._ready();
+      if (typeof window === "undefined" || typeof window.showDirectoryPicker !== "function") {
+        throw new LibfwError("File System Access API is not available in this browser", "unsupported");
+      }
+      if (!filePath) throw new LibfwError("downloadFile requires a file path", "path");
+      this._dirHandle = await window.showDirectoryPicker();
+      this._fileHandles.clear();
+      try {
+        return await engine.download_file(this._options.baseUrl, token, filePath);
+      } catch (err) {
+        throw toLibfwError(err);
+      } finally {
+        await this._flushWritables();
+      }
+    }
+    /**
+     * Stream a decompressed chunk straight to disk at its absolute byte
+     * offset, keeping memory bounded regardless of file size (no whole-file
+     * buffering). The engine awaits this callback, so writes for a file are
+     * applied strictly in order.
      * @param {string} path virtual path
      * @param {number} offset byte offset
      * @param {Uint8Array} data decompressed chunk
@@ -966,6 +1007,9 @@ ${val.stack}`;
      */
     async _onWriteChunk(path, offset, data) {
       // Buffer the chunk; the file is committed in one write on completion.
+      // (Incremental `write({type:'write', position})` calls spawn a new
+      // `.crswap` temp per write in Chromium and never commit the target, so
+      // we avoid them and write the whole file once.)
       let arr = this._writeBuffers.get(path);
       if (!arr) {
         arr = [];
@@ -974,14 +1018,14 @@ ${val.stack}`;
       arr.push(data);
     }
     /**
+     * Close the destination writable once a file's transfer completes.
+     * @param {string} path virtual path
+     * @returns {Promise<void>}
+     * @private
+     */
+    /**
      * Write one file's buffered chunks to disk with a single plain
      * `createWritable()` + `write()` + `close()`.
-     *
-     * We deliberately do NOT use `createWritable({ keepExistingData: true })`
-     * with incremental `write({ type: 'write', position })` calls: in Chromium
-     * that path spawns a new `.crswap` temp file per write and never commits
-     * the target (files end up empty with a pile of `.crswap` files). One full
-     * write + close is the reliable, canonical pattern.
      * @param {string} path virtual path
      * @returns {Promise<void>}
      * @private
@@ -1011,6 +1055,38 @@ ${val.stack}`;
       return p;
     }
     /**
+     * Close the destination writable once a file's transfer completes.
+     *
+     * Commits the buffered bytes to disk (single full write) before
+     * reporting the file done, and returns a promise that never rejects so
+     * the 0.1.2 engine's awaited `onFileCompleted` always resolves.
+     * @param {string} path virtual path
+     * @returns {Promise<void>}
+     * @private
+     */
+    async _onFileCompleted(path) {
+      const p = this._finalizeFile(path);
+      this._emit({ type: "fileCompleted", path });
+      await p.catch(() => {
+      });
+    }
+    /**
+     * Close (and forget) a file's writable, flushing buffered bytes to disk.
+     * @param {string} path virtual path
+     * @returns {Promise<void>}
+     * @private
+     */
+    async _closeWritable(path) {
+      const writable = this._writables.get(path);
+      if (writable) {
+        this._writables.delete(path);
+        try {
+          await writable.close();
+        } catch {
+        }
+      }
+    }
+    /**
      * Resolve (and create, if needed) the file handle for a virtual path,
      * creating any parent directories along the way.
      * @param {string} path
@@ -1029,7 +1105,8 @@ ${val.stack}`;
       return dir.getFileHandle(segments[segments.length - 1], { create: true });
     }
     /**
-     * Close all open writable streams (flush to disk).
+     * Close all still-open writable streams (flush to disk). Called on
+     * success, failure or cancellation of a transfer.
      * @returns {Promise<void>}
      * @private
      */

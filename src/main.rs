@@ -138,32 +138,6 @@ where
             return Box::pin(self.inner.call(req));
         };
 
-        // Browsers always advertise `Accept-Encoding: gzip, deflate, br, zstd`,
-        // and libfw maps `zstd` to its proprietary zrip framing. Only the libfw
-        // SDK (which explicitly sends `Accept-Encoding: zrip` and decompresses)
-        // can consume zrip; a plain browser fetch would save the compressed
-        // bytes as the file itself. So for `/file` downloads, force identity
-        // unless the client explicitly asked for zrip.
-        if pfx == "/file/"
-            && matches!(req.method(), &axum::http::Method::GET | &axum::http::Method::HEAD)
-        {
-            let wants_zrip = req
-                .headers()
-                .get(axum::http::header::ACCEPT_ENCODING)
-                .and_then(|v| v.to_str().ok())
-                .map(|v| {
-                    v.split(',')
-                        .any(|t| t.trim().eq_ignore_ascii_case("zrip"))
-                })
-                .unwrap_or(false);
-            if !wants_zrip {
-                req.headers_mut().insert(
-                    axum::http::header::ACCEPT_ENCODING,
-                    axum::http::header::HeaderValue::from_static("identity"),
-                );
-            }
-        }
-
         let token = req
             .headers()
             .get(axum::http::header::AUTHORIZATION)

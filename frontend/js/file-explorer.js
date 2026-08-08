@@ -371,12 +371,17 @@ async function runUploadTask(t, destPath, token, items) {
 //
 // Folder downloads use the libfw-client SDK's `downloadFolder` (File System
 // Access API → the user picks the destination directory, structure is
-// preserved, bytes stream through createWritable with Range/If-Range resume).
-// Single-file downloads fetch the libfw `/file/{path}` endpoint directly,
-// because the SDK exposes no single-file API.
+// preserved, bytes stream through createWritable). Since libfw-client 0.1.2
+// the SDK also has `downloadFile` for single files, so those go through the
+// SDK too — the user picks a destination directory and the file is saved
+// under its own name.
 
 function downloadFile(path, name) {
   (async () => {
+    if (!window.showDirectoryPicker) {
+      alert('File download requires a Chromium-based browser (File System Access API)');
+      return;
+    }
     const tokenResp = await API.getToken(path, 'read');
     const t = { kind: 'download', name, total: 0, done: 0, status: 'active', error: null };
     addTransfer(t);
@@ -391,10 +396,10 @@ async function runFileDownloadTask(t, path, name, token) {
   t.error = null;
   renderTransfers();
   try {
-    await Libfw.downloadFile(token, path, name, (ev) => {
+    const bytes = await Libfw.downloadFile(token, path, (ev) => {
       if (ev.type === 'progress') updateTransfer(t.id, { done: ev.done, total: ev.total });
     });
-    updateTransfer(t.id, { status: 'done', done: t.total });
+    updateTransfer(t.id, { status: 'done', done: bytes });
     setTimeout(() => removeTransfer(t.id), 3000);
   } catch (e) {
     const cancelled = e && (e.code === 'cancelled' || e.code === 'abort' || e.name === 'AbortError');

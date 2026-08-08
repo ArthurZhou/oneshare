@@ -586,7 +586,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1025,7 +1025,7 @@ dependencies = [
  "libc",
  "percent-encoding",
  "pin-project-lite",
- "socket2 0.6.5",
+ "socket2 0.5.10",
  "tokio",
  "tower-service",
  "tracing",
@@ -1294,9 +1294,9 @@ checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
 
 [[package]]
 name = "libfw-core"
-version = "0.1.0"
+version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a73b93de29c7c5d1d50876ce41edbf700871566dadaa283570c464bcf2da35b2"
+checksum = "0e5df914e0aa616bbd1ff5b7d5e7a89ea8554a19b5f9a3da5dfd5dae4ab2b526"
 dependencies = [
  "async-trait",
  "serde",
@@ -1308,9 +1308,9 @@ dependencies = [
 
 [[package]]
 name = "libfw-server"
-version = "0.1.0"
+version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5455fd4b374f9f2bc8f5eb022c92b62561e41f2af6917aa0ab86b527c58a6824"
+checksum = "931df3cb007f2e2c28b3e579f6a1b710c538335343ee806e3dcc2be857c5fe44"
 dependencies = [
  "async-trait",
  "axum",
@@ -2042,7 +2042,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3073,7 +3073,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
