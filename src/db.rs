@@ -66,7 +66,52 @@ impl Database {
             ",
         )?;
 
+        // Seed the reserved "default" group: it defines the permissions of
+        // every user who has not been assigned to any explicit group. It is
+        // idempotent so existing databases pick it up on the next startup.
+        conn.execute(
+            "INSERT OR IGNORE INTO groups_ (name, description)
+             VALUES ('default', 'Fallback group: applies to users not in any explicit group')",
+            [],
+        )?;
+
         Ok(())
+    }
+
+    /// The reserved group name that holds permissions for unassigned users.
+    pub const DEFAULT_GROUP_NAME: &'static str = "default";
+
+    /// ID of the reserved `default` group, if it exists.
+    pub fn get_default_group_id(&self) -> Result<Option<i64>, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let id = conn.query_row(
+            "SELECT id FROM groups_ WHERE name = ?1",
+            params![Self::DEFAULT_GROUP_NAME],
+            |r| r.get(0),
+        );
+        match id {
+            Ok(id) => Ok(Some(id)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// The groups that actually apply to a user for ACL decisions.
+    ///
+    /// A user with explicit group memberships uses exactly those groups. A
+    /// user with **no** memberships is treated as a member of the reserved
+    /// `default` group, so admins can grant base permissions to every
+    /// unassigned user with a single ACL.
+    pub fn get_effective_groups(&self, user_id: i64) -> Result<Vec<i64>, rusqlite::Error> {
+        let groups = self.get_user_groups(user_id)?;
+        if !groups.is_empty() {
+            return Ok(groups);
+        }
+        // No explicit groups → fall back to the `default` group.
+        Ok(self
+            .get_default_group_id()?
+            .map(|id| vec![id])
+            .unwrap_or_default())
     }
 
     pub fn get_user_by_oidc_sub(
@@ -208,6 +253,28 @@ impl Database {
         conn.execute("DELETE FROM acl_entries WHERE group_id = ?", params![group_id])?;
         conn.execute("DELETE FROM groups_ WHERE id = ?", params![group_id])?;
         Ok(())
+    }
+
+    pub fn get_group_by_id(&self, group_id: i64) -> Result<Option<GroupRow>, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT g.id, g.name, g.description, COUNT(ug.user_id)
+             FROM groups_ g
+             LEFT JOIN user_groups ug ON ug.group_id = g.id
+             WHERE g.id = ?
+             GROUP BY g.id",
+        )?;
+        let mut rows = stmt.query(params![group_id])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some(GroupRow {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                description: row.get(2)?,
+                member_count: row.get(3)?,
+            }))
+        } else {
+            Ok(None)
+        }
     }
 
     pub fn add_user_to_group(&self, user_id: i64, group_id: i64) -> Result<(), rusqlite::Error> {

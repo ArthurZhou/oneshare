@@ -114,12 +114,38 @@ the default behavior.
 - **Read**: Can list directories and download files
 - **Write**: Can upload, create folders, rename, move, delete
 - **Admin**: Full control (currently: all admin users bypass all ACLs)
+- **Fail-closed**: a path with **no** matching ACL is not accessible to anyone —
+  ACLs grant access, they never default to "readable".
 
 ACL entries can target:
 - A specific user (👤 user-level)
 - A group (👥 group-level)
 
 Entries are path-prefix-based: an ACL set for `/photos` applies to `/photos` and all subdirectories.
+
+### The `default` group
+
+Every user who has not been assigned to any explicit group is treated as a
+member of the reserved **`default`** group. It lets admins grant base
+permissions to all unassigned users with a single ACL (e.g. `/public → default
+(read)`), and it cannot be deleted. Users with explicit group memberships use
+exactly those groups and do *not* inherit `default`.
+
+### Samba-style web root
+
+The browser root (`/`) is a virtual share root, like Samba: it lists every
+ACL-configured directory the user can read as a top-level folder named after
+its **leaf** directory, hiding whatever lies above it. For example, with ACLs
+on `/public (r)`, `/private (rw)` and `/nested/public2`, the user sees three
+folders — `public`, `private`, `public2` — and inside `public2` the path shows
+only `public2`, never `/nested`. The address bar reflects the current folder
+(e.g. `#/public2/sub`).
+
+Real filesystem paths are **never sent to the frontend** for non-admin users:
+the server resolves virtual paths internally and ACL checks always run against
+the real path. Admins are **not** affected by the virtual root — they browse
+the actual filesystem tree so they can see the real paths they need to write
+ACL entries for.
 
 The first user to log in automatically becomes admin.
 

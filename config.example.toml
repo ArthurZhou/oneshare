@@ -17,3 +17,21 @@ issuer_url = "https://login.example.com"
 client_id = "your-client-id"
 client_secret = "your-client-secret"
 redirect_uri = "http://localhost:3456/auth/callback"
+
+# libfw file-transfer layer. Server knobs configure the embedded libfw router;
+# client knobs are served to the browser via /config.js (window.ONESHARE_LIBFW)
+# so the frontend configures the libfw-client SDK from this file.
+[libfw]
+# Download compression served by the embedded server: "none" (default, safe
+# for plain browser fetches) or "zrip" (the SDK can decompress it). The SDK's
+# compress flag mirrors this.
+compression = "none"
+# Upper bound for a single upload body in bytes (default 100 GiB).
+max_upload_size = 107374182400
+# Client SDK options (defaults shown).
+concurrency = 4
+chunk_size = 2097152
+max_retries = 3
+base_retry_delay_ms = 500
+max_retry_delay_ms = 30000
+timeout_ms = 60000

@@ -1,4 +1,4 @@
-use crate::db::{AclEntryRow, Database, UserRow};
+use crate::db::{AclEntryRow, UserRow};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Permission {
@@ -47,7 +47,8 @@ fn entry_applies(entry_path: &str, path: &str) -> bool {
 /// Pure permission check against pre-fetched ACL entries and group memberships.
 ///
 /// - Admin users bypass ACLs entirely.
-/// - When no ACL applies to the path, read is allowed (write/admin denied).
+/// - When no ACL applies to the path, access is **denied** (fail-closed): an
+///   unconfigured path is not readable or writable by anyone.
 /// - The most specific (longest) matching ACL wins; its first matching
 ///   user/group rule decides, otherwise access is denied.
 pub fn can_access(
@@ -69,8 +70,8 @@ pub fn can_access(
     applicable.sort_by(|a, b| b.path.len().cmp(&a.path.len()).then(a.id.cmp(&b.id)));
 
     if applicable.is_empty() {
-        // No ACL = allow read, deny write/admin by default
-        return matches!(required, Permission::Read);
+        // No ACL configured for this path: deny by default.
+        return false;
     }
 
     for entry in applicable {
@@ -91,20 +92,115 @@ pub fn can_access(
     false
 }
 
-pub fn check_permission(
-    db: &Database,
-    user: &UserRow,
-    path: &str,
-    required: Permission,
-) -> Result<bool, String> {
-    let acl_entries = db
-        .list_acl_entries()
-        .map_err(|e| format!("DB error: {}", e))?;
-    let user_groups = db
-        .get_user_groups(user.id)
-        .map_err(|e| format!("DB error: {}", e))?;
-    Ok(can_access(user, &user_groups, &acl_entries, path, &required))
+/// A "share" visible at the web root (Samba-style virtual root).
+///
+/// Every ACL entry the user can read becomes a root-level folder whose name is
+/// the **leaf** segment of the real path and whose `real_path` is the full
+/// configured path. For example, an ACL on `/nested/public2` shows up as a
+/// top-level folder named `public2`; the `/nested` part above it is hidden
+/// from the user, exactly like Samba hides everything above a share mount.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Share {
+    pub virtual_name: String,
+    pub real_path: String,
 }
+
+/// Compute the shares visible at the virtual root for `user`.
+///
+/// `user_groups` must already include the `default` group for unassigned
+/// users (see [`Database::get_effective_groups`]). Admin users see every
+/// ACL-configured path. Leaf-name collisions (e.g. `/a/data` and `/b/data`
+/// both granting read) are disambiguated like filesystems do: `data`,
+/// `data-2`, `data-3`, …
+pub fn user_shares(
+    user: &UserRow,
+    user_groups: &[i64],
+    acl_entries: &[AclEntryRow],
+) -> Vec<Share> {
+    let is_admin = user.is_admin == 1;
+    let mut shares: Vec<Share> = Vec::new();
+    let mut used: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+
+    for e in acl_entries {
+        if !is_admin {
+            let matches_user = e.user_id == Some(user.id);
+            let matches_group = e
+                .group_id
+                .map(|gid| user_groups.contains(&gid))
+                .unwrap_or(false);
+            if !matches_user && !matches_group {
+                continue;
+            }
+        }
+
+        let real = normalize_path(&e.path);
+        // A root-level ACL (`path == ""`) grants the whole tree; it is not a
+        // named share — callers fall back to listing the real root instead.
+        if real.is_empty() {
+            continue;
+        }
+
+        let base = real
+            .rsplit('/')
+            .next()
+            .unwrap_or(&real)
+            .to_string();
+        let n = used.entry(base.clone()).or_insert(0);
+        // Filesystem-style collision naming: `data`, `data-2`, `data-3`, …
+        let name = if *n == 0 {
+            base.clone()
+        } else {
+            format!("{}-{}", base, *n + 1)
+        };
+        *n += 1;
+
+        shares.push(Share {
+            virtual_name: name,
+            real_path: real,
+        });
+    }
+    shares
+}
+
+/// Map a virtual browse path back to a real path using the user's shares.
+///
+/// The virtual root (`""`) has no real path and returns `None`. Any other
+/// path's first segment names a share; the rest is appended underneath it.
+pub fn resolve_virtual(virtual_path: &str, shares: &[Share]) -> Option<String> {
+    let vp = virtual_path.trim_matches('/');
+    if vp.is_empty() {
+        return None;
+    }
+    let mut segs = vp.split('/');
+    let first = segs.next()?;
+    let share = shares.iter().find(|s| s.virtual_name == first)?;
+    let rest: Vec<&str> = segs.collect();
+    if rest.is_empty() {
+        Some(share.real_path.clone())
+    } else {
+        Some(format!("{}/{}", share.real_path, rest.join("/")))
+    }
+}
+
+/// Whether a root-level ACL (`path == ""`) grants `user` read access to the
+/// whole tree. Used to decide whether the virtual root should fall back to
+/// the real root listing.
+pub fn user_has_root_read(
+    user: &UserRow,
+    user_groups: &[i64],
+    acl_entries: &[AclEntryRow],
+) -> bool {
+    acl_entries.iter().any(|e| {
+        normalize_path(&e.path).is_empty()
+            && (user.is_admin == 1
+                || e.user_id == Some(user.id)
+                || e.group_id
+                    .map(|gid| user_groups.contains(&gid))
+                    .unwrap_or(false))
+    })
+}
+
+
 
 #[cfg(test)]
 mod tests {
@@ -141,9 +237,88 @@ mod tests {
     }
 
     #[test]
-    fn no_acl_default_read_only() {
-        assert!(check(&user(1, false), &[], &[], "anything", Permission::Read));
+    fn no_acl_default_deny() {
+        // Fail-closed: an unconfigured path is not readable or writable.
+        assert!(!check(&user(1, false), &[], &[], "anything", Permission::Read));
         assert!(!check(&user(1, false), &[], &[], "anything", Permission::Write));
+        // Even a read grant on an unrelated sibling does not leak.
+        let entries = vec![acl(1, "public", None, Some(10), "read")];
+        assert!(!check(&user(1, false), &[10], &entries, "secret", Permission::Read));
+    }
+
+    #[test]
+    fn default_group_grants_unassigned_users() {
+        // user has NO explicit groups → effective groups = [default(99)].
+        let entries = vec![acl(1, "public", None, Some(99), "read")];
+        let default_only = vec![99];
+        assert!(check(&user(1, false), &default_only, &entries, "public", Permission::Read));
+        assert!(!check(&user(1, false), &default_only, &entries, "public", Permission::Write));
+        // A user WITH explicit groups no longer inherits the default group.
+        assert!(!check(&user(1, false), &[10], &entries, "public", Permission::Read));
+    }
+
+    #[test]
+    fn shares_are_acl_leaf_names() {
+        // Group A has /public(r), /private(rw), /nested/public2.
+        let entries = vec![
+            acl(1, "public", None, Some(10), "read"),
+            acl(2, "private", None, Some(10), "write"),
+            acl(3, "nested/public2", None, Some(10), "read"),
+        ];
+        let shares = user_shares(&user(1, false), &[10], &entries);
+        let names: Vec<&str> = shares.iter().map(|s| s.virtual_name.as_str()).collect();
+        assert_eq!(names, vec!["public", "private", "public2"]);
+        // real paths map back to the full configured path.
+        let p2 = shares.iter().find(|s| s.virtual_name == "public2").unwrap();
+        assert_eq!(p2.real_path, "nested/public2");
+    }
+
+    #[test]
+    fn shares_ignore_entries_that_do_not_match() {
+        let entries = vec![
+            acl(1, "public", None, Some(10), "read"),   // matches user 1 (group 10)
+            acl(2, "private", None, Some(20), "read"),  // no match
+        ];
+        let shares = user_shares(&user(1, false), &[10], &entries);
+        assert_eq!(shares.len(), 1);
+        assert_eq!(shares[0].virtual_name, "public");
+    }
+
+    #[test]
+    fn shares_collisions_disambiguated() {
+        let entries = vec![
+            acl(1, "a/data", None, Some(10), "read"),
+            acl(2, "b/data", None, Some(10), "read"),
+        ];
+        let shares = user_shares(&user(1, false), &[10], &entries);
+        let names: Vec<&str> = shares.iter().map(|s| s.virtual_name.as_str()).collect();
+        assert_eq!(names, vec!["data", "data-2"]);
+    }
+
+    #[test]
+    fn admin_sees_all_acl_shares() {
+        let entries = vec![
+            acl(1, "public", None, Some(10), "read"),
+            acl(2, "private", None, Some(20), "write"),
+        ];
+        // Admin has no groups but still sees every ACL-configured share.
+        let shares = user_shares(&user(1, true), &[], &entries);
+        assert_eq!(shares.len(), 2);
+    }
+
+    #[test]
+    fn resolve_virtual_maps_to_real() {
+        let shares = vec![
+            Share { virtual_name: "public".into(), real_path: "public".into() },
+            Share { virtual_name: "public2".into(), real_path: "nested/public2".into() },
+        ];
+        assert_eq!(resolve_virtual("", &shares), None);
+        assert_eq!(resolve_virtual("public", &shares), Some("public".to_string()));
+        assert_eq!(
+            resolve_virtual("public2/sub/deep.txt", &shares),
+            Some("nested/public2/sub/deep.txt".to_string())
+        );
+        assert_eq!(resolve_virtual("unknown", &shares), None);
     }
 
     #[test]

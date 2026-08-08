@@ -1,17 +1,81 @@
 // File Explorer state
-let currentPath = '';
+//
+// Paths in this file are DISPLAY paths: for non-admin users they are VIRTUAL
+// (the web root is a Samba-style share root listing ACL-configured dirs, and
+// real filesystem paths never reach the browser); for admins they are the real
+// paths of the actual tree. In both cases `entry.path` is used uniformly for
+// navigation AND file operations — the backend resolves it internally.
+let currentPath = '';        // current directory path ('' = root)
+let currentWritable = false; // whether the current directory allows writes
 let selectedFile = null;
+
+// ── Address-bar (hash) routing ──
+// `#/public2/sub` drives navigation; the fragment is independent of the
+// configured URL prefix, so back/forward and deep links work anywhere.
+let suppressHash = false;
+
+function getPathFromHash() {
+  const h = window.location.hash || '';
+  if (!h.startsWith('#/')) return '';
+  const raw = h.slice(2);
+  if (!raw) return '';
+  try {
+    return decodeURIComponent(raw).replace(/^\/+/, '');
+  } catch {
+    return '';
+  }
+}
+
+function setHashForPath(path) {
+  const target = path ? '#/' + encodeURIComponent(path) : '#/';
+  if (window.location.hash !== target) {
+    suppressHash = true;
+    window.location.hash = target;
+  }
+}
+
+// User-driven navigation: update the address bar and load.
+function navigate(path) {
+  setHashForPath(path);
+  loadFiles(path);
+}
+
+window.addEventListener('hashchange', () => {
+  if (suppressHash) {
+    suppressHash = false;
+    return;
+  }
+  loadFiles(getPathFromHash());
+});
 
 async function loadFiles(path) {
   currentPath = path || '';
   const el = document.getElementById('file-list');
   try {
     const data = await API.listFiles(currentPath);
+    currentWritable = !!data.writable;
     renderFiles(data);
     updatePathNav(data);
+    updateToolbar();
   } catch (e) {
     el.innerHTML = `<div class="empty">Error: ${escapeHtml(e.message)}</div>`;
+    // Don't keep stale state (e.g. after a 404 on an unknown hash) that could
+    // wrongly enable upload/mkdir buttons.
+    currentWritable = false;
+    updateToolbar();
   }
+}
+
+// Uploads/mkdir only make sense inside a writable real directory (the share
+// root and read-only shares have no write target).
+function updateToolbar() {
+  // At the real root (admin/root ACL) currentWritable is true so uploads are
+  // allowed; at the virtual share root it is false so they are disabled.
+  const canWrite = currentWritable;
+  ['btn-upload', 'btn-upload-folder', 'btn-mkdir'].forEach(id => {
+    const btn = document.getElementById(id);
+    if (btn) btn.disabled = !canWrite;
+  });
 }
 
 function updatePathNav(data) {
@@ -34,7 +98,7 @@ function updatePathNav(data) {
   nav.querySelectorAll('a').forEach(a => {
     a.addEventListener('click', (e) => {
       e.preventDefault();
-      loadFiles(a.dataset.path);
+      navigate(a.dataset.path);
     });
   });
 }
@@ -42,7 +106,9 @@ function updatePathNav(data) {
 function renderFiles(data) {
   const el = document.getElementById('file-list');
   if (data.entries.length === 0) {
-    el.innerHTML = '<div class="empty">This folder is empty</div>';
+    el.innerHTML = data.is_share_root
+      ? '<div class="empty">No shared folders — ask an admin to grant you access</div>'
+      : '<div class="empty">This folder is empty</div>';
     return;
   }
 
@@ -75,7 +141,7 @@ function renderFiles(data) {
 
   // Wire up click events
   el.querySelectorAll('.file-row.dir').forEach(row => {
-    row.addEventListener('click', () => loadFiles(row.dataset.path));
+    row.addEventListener('click', () => navigate(row.dataset.path));
   });
 
   // Wire up download buttons (files download directly, folders download as ZIP)
@@ -86,7 +152,7 @@ function renderFiles(data) {
       if (row.dataset.isDir === 'true') {
         downloadFolder(row.dataset.path, row.dataset.name);
       } else {
-        downloadFile(row.dataset.path);
+        downloadFile(row.dataset.path, row.dataset.name);
       }
     });
   });
@@ -125,7 +191,7 @@ async function handleContextAction(action, file) {
   switch (action) {
     case 'download':
       if (file.isDir) await downloadFolder(file.path, file.name);
-      else await downloadFile(file.path);
+      else await downloadFile(file.path, file.name);
       break;
     case 'rename':
       showRenameModal(file);
@@ -139,94 +205,238 @@ async function handleContextAction(action, file) {
   }
 }
 
-// ── File operations ──
+// ── Transfers (upload/download tasks with progress & resume) ──
 
-async function downloadFile(path) {
-  try {
-    const tokenResp = await API.getToken(path, 'read');
-    const downloadUrl = `${API.base}/file/${encodeURIComponent(path)}`;
+let transfers = [];
+let nextTransferId = 1;
 
-    const res = await fetch(downloadUrl, {
-      headers: { 'Authorization': `Bearer ${tokenResp.token}` },
+function addTransfer(transfer) {
+  transfer.id = nextTransferId++;
+  transfers.push(transfer);
+  renderTransfers();
+}
+
+function updateTransfer(id, patch) {
+  const t = transfers.find(x => x.id === id);
+  if (!t) return;
+  Object.assign(t, patch);
+  renderTransfers();
+}
+
+function removeTransfer(id) {
+  transfers = transfers.filter(x => x.id !== id);
+  renderTransfers();
+}
+
+function transferStatusLabel(t) {
+  switch (t.status) {
+    case 'active': return '...';
+    case 'done': return '✓ done';
+    case 'error': return '✗ failed';
+    case 'cancelled': return '✕ cancelled';
+    default: return '';
+  }
+}
+
+function transferPct(t) {
+  if (t.total > 0) return Math.min(100, Math.round(((t.done || 0) / t.total) * 100));
+  return 0;
+}
+
+function renderTransfers() {
+  const panel = document.getElementById('transfers-panel');
+  const list = document.getElementById('transfers-list');
+  if (!panel || !list) return;
+  if (transfers.length === 0) {
+    panel.style.display = 'none';
+    return;
+  }
+  panel.style.display = 'block';
+
+  list.innerHTML = transfers.map(t => {
+    const done = t.status === 'done';
+    const finished = done || t.status === 'error' || t.status === 'cancelled';
+    const action = finished
+      ? `<button class="btn btn-sm" data-xfer-remove="${t.id}" title="Remove">✕</button>`
+      : `<button class="btn btn-sm" data-xfer-cancel="${t.id}" title="Cancel">✕</button>`;
+    const arrow = t.kind === 'upload' ? '⬆' : '⬇';
+    const sub = t.kind === 'upload'
+      ? `Upload · ${formatSize(t.total)}`
+      : 'Download';
+    return `
+      <div class="transfer-row">
+        <div class="transfer-top">
+          <span class="transfer-name" title="${escapeHtml(t.name)}">${arrow} ${escapeHtml(t.name)}</span>
+          <span class="transfer-right">
+            <span class="transfer-pct">${done ? '100%' : transferPct(t) + '%'} ${transferStatusLabel(t)}</span>
+            ${action}
+          </span>
+        </div>
+        <div class="progress-bar"><div class="progress-fill" style="width:${done ? 100 : transferPct(t)}%"></div></div>
+        <div class="transfer-sub">${sub}${t.error ? ` · <span class="err">${escapeHtml(t.error)}</span>` : ''}</div>
+      </div>`;
+  }).join('');
+
+  list.querySelectorAll('[data-xfer-remove]').forEach(btn => {
+    btn.addEventListener('click', () => removeTransfer(parseInt(btn.dataset.xferRemove)));
+  });
+  list.querySelectorAll('[data-xfer-cancel]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const t = transfers.find(x => x.id === parseInt(btn.dataset.xferCancel));
+      if (t && typeof t.cancel === 'function') t.cancel();
     });
-    if (!res.ok) throw new Error(`Download failed: HTTP ${res.status}`);
-    const blob = await res.blob();
-    triggerDownload(blob, path.split('/').pop());
-  } catch (e) {
-    alert('Download failed: ' + e.message);
-  }
+  });
 }
 
-// Download a folder to the user's local filesystem. It prefers the browser
-// File System Access API (showDirectoryPicker) so the folder is saved as a real
-// directory tree; browsers without that API fall back to a client-side ZIP.
-async function downloadFolder(path, name) {
+// ── Upload (via libfw SDK) ──
+//
+// Uploads go through the libfw-client SDK, which handles chunking, zstd
+// compression and x-libfw-offset resume itself. The SDK builds `/file/{path}`
+// from each plan entry, so the wrapper prefixes every relative path with the
+// current (display) directory and the server's token binds the real target.
+// Resume state is persisted per path in IndexedDB by the SDK, so a re-run
+// continues from where an interrupted upload stopped.
+// Refresh the listing shortly after an upload finishes, debounced so a batch
+// of concurrent uploads only triggers one reload.
+let uploadRefreshTimer = null;
+function scheduleUploadRefresh() {
+  clearTimeout(uploadRefreshTimer);
+  uploadRefreshTimer = setTimeout(() => loadFiles(currentPath), 500);
+}
+
+async function handleUpload(input) {
+  // Accept both raw File objects (legacy callers, e.g. a stale cached app.js)
+  // and { file, relPath } items, then drop anything without a File.
+  const items = Array.from(input || [])
+    .map((it) =>
+      it instanceof File
+        ? { file: it, relPath: it.webkitRelativePath || it.name }
+        : it
+    )
+    .filter((it) => it && it.file);
+  if (!items.length) return;
+
+  const destPath = currentPath || '';
+  if (!currentWritable) {
+    alert('Upload is not allowed in this folder');
+    return;
+  }
+
+  // One write token for the destination; the server binds it to the real
+  // directory path, and the SDK uploads virtual child paths underneath it.
+  let token;
   try {
-    const tokenResp = await API.getToken(path, 'read');
-    const files = await collectFolderFiles(path, tokenResp.token);
-    if (!files.length) {
-      alert('Folder is empty');
-      return;
-    }
-
-    // Primary path: File System Access API -> write each file into a real folder.
-    if (window.showDirectoryPicker) {
-      const rootHandle = await window.showDirectoryPicker();
-      for (const f of files) {
-        const res = await fetch(`${API.base}/file/${encodeURIComponent(f.path)}`, {
-          headers: { 'Authorization': `Bearer ${tokenResp.token}` },
-        });
-        if (!res.ok) throw new Error(`Failed to download ${f.path}: HTTP ${res.status}`);
-        const data = await res.arrayBuffer();
-        const rel = path ? f.path.substring(path.length + 1) : f.path;
-        const parts = rel.split('/');
-        const fileName = parts.pop();
-        let dirHandle = rootHandle;
-        for (const part of parts) {
-          dirHandle = await dirHandle.getDirectoryHandle(part, { create: true });
-        }
-        const fileHandle = await dirHandle.getFileHandle(fileName, { create: true });
-        const writable = await fileHandle.createWritable();
-        await writable.write(data);
-        await writable.close();
-      }
-      return;
-    }
-
-    // Fallback: pack the folder into a store-only ZIP archive.
-    const entries = [];
-    for (const f of files) {
-      const res = await fetch(`${API.base}/file/${encodeURIComponent(f.path)}`, {
-        headers: { 'Authorization': `Bearer ${tokenResp.token}` },
-      });
-      if (!res.ok) throw new Error(`Failed to download ${f.path}: HTTP ${res.status}`);
-      const data = await res.arrayBuffer();
-      const rel = name + '/' + (path ? f.path.substring(path.length + 1) : f.path);
-      entries.push({ path: rel, data });
-    }
-
-    const zip = await buildZip(entries);
-    triggerDownload(zip, name + '.zip');
+    token = (await API.getToken(destPath || '/', 'write')).token;
   } catch (e) {
-    alert('Folder download failed: ' + e.message);
+    alert('Upload denied: ' + e.message);
+    return;
+  }
+
+  const total = items.reduce((s, it) => s + (it.file.size || 0), 0);
+  const name = items.length === 1 ? items[0].relPath : `${items.length} files`;
+  const t = {
+    kind: 'upload',
+    name,
+    total,
+    done: 0,
+    status: 'active',
+    error: null,
+  };
+  addTransfer(t);
+  t.cancel = () => Libfw.cancel();
+  t.run = () => runUploadTask(t, destPath, token, items);
+  t.run();
+}
+
+async function runUploadTask(t, destPath, token, items) {
+  t.status = 'active';
+  t.error = null;
+  renderTransfers();
+  try {
+    await Libfw.upload(destPath, token, items, (ev) => {
+      if (ev.type === 'progress') updateTransfer(t.id, { done: ev.done, total: ev.total });
+    });
+    updateTransfer(t.id, { status: 'done', done: t.total });
+    scheduleUploadRefresh();
+  } catch (e) {
+    const cancelled = e && (e.code === 'cancelled' || e.code === 'abort' || e.name === 'AbortError');
+    updateTransfer(t.id, {
+      status: cancelled ? 'cancelled' : 'error',
+      error: cancelled ? '' : (e && e.message) || String(e),
+    });
   }
 }
 
-// Recursively list every file under `path` using libfw's /dir listing.
-async function collectFolderFiles(path, token) {
-  const files = [];
-  async function walk(dir) {
-    const entries = await API.listDir(dir, token);
-    for (const entry of entries) {
-      if (entry.is_dir) {
-        await walk(entry.path);
-      } else {
-        files.push({ path: entry.path });
-      }
-    }
+// ── Downloads (via libfw SDK) ──
+//
+// Folder downloads use the libfw-client SDK's `downloadFolder` (File System
+// Access API → the user picks the destination directory, structure is
+// preserved, bytes stream through createWritable with Range/If-Range resume).
+// Single-file downloads fetch the libfw `/file/{path}` endpoint directly,
+// because the SDK exposes no single-file API.
+
+function downloadFile(path, name) {
+  (async () => {
+    const tokenResp = await API.getToken(path, 'read');
+    const t = { kind: 'download', name, total: 0, done: 0, status: 'active', error: null };
+    addTransfer(t);
+    t.cancel = () => Libfw.cancel();
+    t.run = () => runFileDownloadTask(t, path, name, tokenResp.token);
+    t.run();
+  })().catch(e => alert('Download denied: ' + e.message));
+}
+
+async function runFileDownloadTask(t, path, name, token) {
+  t.status = 'active';
+  t.error = null;
+  renderTransfers();
+  try {
+    await Libfw.downloadFile(token, path, name, (ev) => {
+      if (ev.type === 'progress') updateTransfer(t.id, { done: ev.done, total: ev.total });
+    });
+    updateTransfer(t.id, { status: 'done', done: t.total });
+    setTimeout(() => removeTransfer(t.id), 3000);
+  } catch (e) {
+    const cancelled = e && (e.code === 'cancelled' || e.code === 'abort' || e.name === 'AbortError');
+    updateTransfer(t.id, {
+      status: cancelled ? 'cancelled' : 'error',
+      error: cancelled ? '' : (e && e.message) || String(e),
+    });
   }
-  await walk(path);
-  return files;
+}
+
+function downloadFolder(path, name) {
+  (async () => {
+    if (!window.showDirectoryPicker) {
+      alert('Folder download requires a Chromium-based browser (File System Access API)');
+      return;
+    }
+    const tokenResp = await API.getToken(path, 'read');
+    const t = { kind: 'download', name, total: 0, done: 0, status: 'active', error: null };
+    addTransfer(t);
+    t.cancel = () => Libfw.cancel();
+    t.run = () => runFolderDownloadTask(t, path, name, tokenResp.token);
+    t.run();
+  })().catch(e => alert('Download denied: ' + e.message));
+}
+
+async function runFolderDownloadTask(t, path, name, token) {
+  t.status = 'active';
+  t.error = null;
+  renderTransfers();
+  try {
+    const bytes = await Libfw.downloadFolder(token, path, (ev) => {
+      if (ev.type === 'progress') updateTransfer(t.id, { done: ev.done, total: ev.total });
+    });
+    updateTransfer(t.id, { status: 'done', done: bytes });
+    setTimeout(() => removeTransfer(t.id), 3000);
+  } catch (e) {
+    const cancelled = e && (e.code === 'cancelled' || e.code === 'abort' || e.name === 'AbortError');
+    updateTransfer(t.id, {
+      status: cancelled ? 'cancelled' : 'error',
+      error: cancelled ? '' : (e && e.message) || String(e),
+    });
+  }
 }
 
 function showRenameModal(file) {
@@ -247,9 +457,12 @@ function showRenameModal(file) {
 }
 
 function showMoveModal(file) {
+  // The destination is entered in the current path space (virtual for
+  // non-admins, real for admins); the server resolves it to a real path.
+  const placeholder = currentPath ? currentPath + '/' : '/';
   showModal('Move', `
     <label>Move "${escapeHtml(file.name)}" to:</label>
-    <input type="text" id="move-input" placeholder="/path/to/destination" value="${escapeHtml(currentPath ? currentPath + '/' : '')}">
+    <input type="text" id="move-input" placeholder="/path/to/destination" value="${escapeHtml(placeholder)}">
   `, async () => {
     const destDir = document.getElementById('move-input').value.trim().replace(/\/$/, '');
     if (!destDir) return;
@@ -296,77 +509,6 @@ function showMkdirModal() {
       alert('Create folder failed: ' + e.message);
     }
   });
-}
-
-// ── Upload ──
-
-async function handleUpload(input) {
-  // Accept both raw File objects (legacy callers, e.g. a stale cached app.js)
-  // and { file, relPath } items, then drop anything without a File so we never
-  // dereference `file.size` on undefined.
-  const items = Array.from(input || [])
-    .map((it) =>
-      it instanceof File
-        ? { file: it, relPath: it.webkitRelativePath || it.name }
-        : it
-    )
-    .filter((it) => it && it.file);
-  if (!items.length) return;
-
-  // Snapshot the destination folder when the task starts, so navigating away in
-  // the UI while files are still in flight does not redirect the upload.
-  const destPath = currentPath || '';
-  try {
-    const tokenResp = await API.getToken(destPath || '/', 'write');
-    const progressEl = document.getElementById('upload-progress');
-    const nameEl = document.getElementById('upload-name');
-    const pctEl = document.getElementById('upload-pct');
-    const fillEl = document.getElementById('progress-fill');
-    progressEl.style.display = 'block';
-
-    for (const { file, relPath } of items) {
-      nameEl.textContent = `Uploading: ${relPath}`;
-      pctEl.textContent = '0%';
-      fillEl.style.width = '0%';
-
-      const uploadPath = (destPath ? destPath + '/' : '') + relPath;
-
-      await new Promise((resolve, reject) => {
-        const xhr = new XMLHttpRequest();
-        xhr.open('POST', `${API.base}/file/${encodeURIComponent(uploadPath)}`, true);
-        xhr.setRequestHeader('Authorization', `Bearer ${tokenResp.token}`);
-        // HTTP header values must be Latin-1; URL-encode the path so non-ASCII
-        // (e.g. Chinese) filenames don't break setRequestHeader. The server
-        // writes to the URL-decoded path, so the header is only informational.
-        xhr.setRequestHeader('x-libfw-file-meta', JSON.stringify({
-          path: encodeURIComponent(uploadPath),
-          size: file.size
-        }));
-        xhr.setRequestHeader('Content-Type', 'application/octet-stream');
-
-        xhr.upload.onprogress = (e) => {
-          if (e.lengthComputable) {
-            const pct = Math.round((e.loaded / e.total) * 100);
-            pctEl.textContent = pct + '%';
-            fillEl.style.width = pct + '%';
-          }
-        };
-
-        xhr.onload = () => {
-          if (xhr.status >= 200 && xhr.status < 300) resolve();
-          else reject(new Error(`HTTP ${xhr.status}`));
-        };
-        xhr.onerror = () => reject(new Error('Network error'));
-        xhr.send(file);
-      });
-    }
-
-    progressEl.style.display = 'none';
-    loadFiles(currentPath);
-  } catch (e) {
-    document.getElementById('upload-progress').style.display = 'none';
-    alert('Upload failed: ' + e.message);
-  }
 }
 
 // ── Drag and drop ──
@@ -527,112 +669,6 @@ function escapeHtml(str) {
   return div.innerHTML;
 }
 
-// ── ZIP helpers (store-only; used for folder download) ──
-
-const CRC_TABLE = (() => {
-  const t = new Uint32Array(256);
-  for (let n = 0; n < 256; n++) {
-    let c = n;
-    for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
-    t[n] = c >>> 0;
-  }
-  return t;
-})();
-
-function crc32(buf) {
-  const u8 = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
-  let c = 0xFFFFFFFF;
-  for (let i = 0; i < u8.length; i++) c = CRC_TABLE[(c ^ u8[i]) & 0xFF] ^ (c >>> 8);
-  return (c ^ 0xFFFFFFFF) >>> 0;
-}
-
-function dosDateTime(date) {
-  const time = ((date.getHours() & 0x1f) << 11)
-    | ((date.getMinutes() & 0x3f) << 5)
-    | ((date.getSeconds() >> 1) & 0x1f);
-  const day = ((date.getFullYear() >= 1980 ? date.getFullYear() - 1980 : 0) << 9)
-    | (((date.getMonth() + 1) & 0x0f) << 5)
-    | (date.getDate() & 0x1f);
-  return { time, day };
-}
-
-// Build a valid store-only ZIP archive from [{ path, data }] entries.
-async function buildZip(entries) {
-  const encoder = new TextEncoder();
-  const now = dosDateTime(new Date());
-  const localParts = [];
-  const centralHeaders = [];
-  let offset = 0;
-
-  for (const entry of entries) {
-    const nameBytes = encoder.encode(entry.path);
-    const data = entry.data instanceof Uint8Array ? entry.data : new Uint8Array(entry.data);
-    const crc = crc32(data);
-    const size = data.length;
-
-    // Local file header
-    const local = new Uint8Array(30 + nameBytes.length);
-    const lv = new DataView(local.buffer);
-    lv.setUint32(0, 0x04034b50, true);
-    lv.setUint16(4, 20, true);
-    lv.setUint16(6, 0x0800, true); // UTF-8 filename flag
-    lv.setUint16(8, 0, true); // store (no compression)
-    lv.setUint16(10, now.time, true);
-    lv.setUint16(12, now.day, true);
-    lv.setUint32(14, crc, true);
-    lv.setUint32(18, size, true);
-    lv.setUint32(22, size, true);
-    lv.setUint16(26, nameBytes.length, true);
-    lv.setUint16(28, 0, true);
-    local.set(nameBytes, 30);
-    localParts.push(local, data);
-
-    // Central directory header
-    const central = new Uint8Array(46 + nameBytes.length);
-    const cv = new DataView(central.buffer);
-    cv.setUint32(0, 0x02014b50, true);
-    cv.setUint16(4, 20, true);
-    cv.setUint16(6, 20, true);
-    cv.setUint16(8, 0x0800, true);
-    cv.setUint16(10, 0, true);
-    cv.setUint16(12, now.time, true);
-    cv.setUint16(14, now.day, true);
-    cv.setUint32(16, crc, true);
-    cv.setUint32(20, size, true);
-    cv.setUint32(24, size, true);
-    cv.setUint16(28, nameBytes.length, true);
-    cv.setUint16(30, 0, true);
-    central.set(nameBytes, 46);
-    cv.setUint32(42, offset, true);
-
-    centralHeaders.push(central);
-    offset += local.length + size;
-  }
-
-  const centralStart = offset;
-  let centralSize = 0;
-  for (const c of centralHeaders) centralSize += c.length;
-
-  // End of central directory record
-  const eocd = new Uint8Array(22);
-  const ev = new DataView(eocd.buffer);
-  ev.setUint32(0, 0x06054b50, true);
-  ev.setUint16(8, entries.length, true);
-  ev.setUint16(10, entries.length, true);
-  ev.setUint32(12, centralSize, true);
-  ev.setUint32(16, centralStart, true);
-
-  return new Blob([...localParts, ...centralHeaders, eocd], { type: 'application/zip' });
-}
-
-function triggerDownload(blob, filename) {
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  // Defer revoke so the browser has time to start the download.
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
-}
+// Folder downloads now use the libfw SDK (File System Access API) and single
+// file downloads are handled by libfw.js, so the client-side ZIP packer and
+// blob-trigger helpers were removed.

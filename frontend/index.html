@@ -64,15 +64,13 @@
   </div>
 </div>
 
-<!-- Upload Progress -->
-<div id="upload-progress" class="upload-progress" style="display:none">
-  <div class="progress-header">
-    <span id="upload-name">Uploading...</span>
-    <span id="upload-pct">0%</span>
+<!-- Transfers: upload/download progress with resume -->
+<div id="transfers-panel" class="transfers-panel" style="display:none">
+  <div class="transfers-header">
+    <span>⇅ Transfers</span>
+    <button id="transfers-clear" class="btn btn-sm" title="Clear finished tasks">✕</button>
   </div>
-  <div class="progress-bar">
-    <div id="progress-fill" class="progress-fill" style="width:0%"></div>
-  </div>
+  <div id="transfers-list" class="transfers-list"></div>
 </div>
 
 <!-- Admin Panel -->
@@ -98,6 +96,9 @@
      so the client can build absolute API/file URLs under the prefix. -->
 <script src="config.js"></script>
 <script src="js/api.js"></script>
+<!-- libfw-client SDK (UMD) + its wrapper: all file transfers go through here -->
+<script src="vendor/libfw-client.js"></script>
+<script src="js/libfw.js"></script>
 <script src="js/auth.js"></script>
 <script src="js/file-explorer.js"></script>
 <script src="js/admin.js"></script>

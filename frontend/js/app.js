@@ -3,8 +3,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Check auth first
   await checkAuth();
 
-  // Load initial file listing
-  loadFiles('');
+  // Load the initial directory from the address bar (hash routing), so a
+  // deep link like `#/public2/sub` opens directly in that folder.
+  loadFiles(getPathFromHash());
 
   // Setup event listeners
   setupEventListeners();
@@ -12,6 +13,12 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // Close context menu on click outside
   document.addEventListener('click', () => hideContextMenu());
+
+  // Clear finished transfer tasks
+  document.getElementById('transfers-clear')?.addEventListener('click', () => {
+    transfers = transfers.filter(t => t.status === 'active');
+    renderTransfers();
+  });
 });
 
 function setupEventListeners() {

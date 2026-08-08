@@ -41,7 +41,9 @@ async function renderAclPanel() {
   });
 
   const userOpts = users.map(u => `<option value="user:${u.id}">👤 ${escapeHtml(u.display_name)}</option>`).join('');
-  const groupOpts = groups.map(g => `<option value="group:${g.id}">👥 ${escapeHtml(g.name)}</option>`).join('');
+  // The reserved `default` group controls permissions for users not assigned
+  // to any explicit group; label it clearly in the ACL picker.
+  const groupOpts = groups.map(g => `<option value="group:${g.id}">👥 ${escapeHtml(g.name)}${g.name === 'default' ? ' (all unassigned users)' : ''}</option>`).join('');
 
   return `
     <div class="admin-acl-add">
@@ -97,15 +99,18 @@ async function renderGroupsPanel() {
   let rows = '';
   groups.forEach(g => {
     const count = typeof g.member_count === 'number' ? g.member_count : 0;
+    const isDefault = g.name === 'default';
     rows += `<div class="admin-group-row">
       <div>
         <strong>👥 ${escapeHtml(g.name)}</strong>
+        ${isDefault ? '<span class="admin-tag">default</span>' : ''}
         <span class="member-count">${count} member${count === 1 ? '' : 's'}</span>
         ${g.description ? `<span class="group-desc">— ${escapeHtml(g.description)}</span>` : ''}
+        ${isDefault ? '<span class="group-desc">(grants permissions to users not in any group)</span>' : ''}
       </div>
       <div>
         <button class="btn btn-sm" data-manage-group="${g.id}" data-name="${escapeHtml(g.name)}">👤 Manage</button>
-        <button class="btn btn-sm btn-danger" data-delete-group="${g.id}">×</button>
+        ${isDefault ? '' : `<button class="btn btn-sm btn-danger" data-delete-group="${g.id}">×</button>`}
       </div>
     </div>`;
   });

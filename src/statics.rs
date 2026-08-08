@@ -42,17 +42,22 @@ pub fn frontend_router() -> Router {
 /// Serves one of the minified, compile-time-embedded frontend assets.
 #[cfg(not(debug_assertions))]
 async fn embedded_serve(uri: axum::http::Uri) -> axum::response::Response {
+    use axum::body::Body;
     use axum::http::StatusCode;
     use axum::response::IntoResponse;
 
     let (body, content_type) = match uri.path() {
-        "/" | "/index.html" => (INDEX_HTML, "text/html; charset=utf-8"),
-        "/css/main.css" => (STYLE_CSS, "text/css; charset=utf-8"),
-        "/js/api.js" => (API_JS, "application/javascript; charset=utf-8"),
-        "/js/auth.js" => (AUTH_JS, "application/javascript; charset=utf-8"),
-        "/js/file-explorer.js" => (FILE_EXPLORER_JS, "application/javascript; charset=utf-8"),
-        "/js/admin.js" => (ADMIN_JS, "application/javascript; charset=utf-8"),
-        "/js/app.js" => (APP_JS, "application/javascript; charset=utf-8"),
+        "/" | "/index.html" => (Body::from(INDEX_HTML), "text/html; charset=utf-8"),
+        "/css/main.css" => (Body::from(STYLE_CSS), "text/css; charset=utf-8"),
+        "/js/api.js" => (Body::from(API_JS), "application/javascript; charset=utf-8"),
+        "/js/auth.js" => (Body::from(AUTH_JS), "application/javascript; charset=utf-8"),
+        "/js/libfw.js" => (Body::from(LIBFW_JS), "application/javascript; charset=utf-8"),
+        "/js/file-explorer.js" => (Body::from(FILE_EXPLORER_JS), "application/javascript; charset=utf-8"),
+        "/js/admin.js" => (Body::from(ADMIN_JS), "application/javascript; charset=utf-8"),
+        "/js/app.js" => (Body::from(APP_JS), "application/javascript; charset=utf-8"),
+        // Vendored libfw SDK (classic-script UMD bundle) + its WASM engine.
+        "/vendor/libfw-client.js" => (Body::from(VENDOR_LIBFW_JS), "application/javascript; charset=utf-8"),
+        "/vendor/libfw_client_bg.wasm" => (Body::from(VENDOR_LIBFW_WASM), "application/wasm"),
         _ => return (StatusCode::NOT_FOUND, "Not found").into_response(),
     };
 
@@ -67,7 +72,8 @@ async fn embedded_serve(uri: axum::http::Uri) -> axum::response::Response {
 }
 
 // Release-only: minified assets produced by `cd frontend && pnpm build` into
-// ../static. cargo tracks `include_str!` files and rebuilds when they change.
+// ../static. cargo tracks `include_str!`/`include_bytes!` files and rebuilds
+// when they change.
 #[cfg(not(debug_assertions))]
 static INDEX_HTML: &str = include_str!("../static/index.html");
 #[cfg(not(debug_assertions))]
@@ -77,8 +83,14 @@ static API_JS: &str = include_str!("../static/js/api.js");
 #[cfg(not(debug_assertions))]
 static AUTH_JS: &str = include_str!("../static/js/auth.js");
 #[cfg(not(debug_assertions))]
+static LIBFW_JS: &str = include_str!("../static/js/libfw.js");
+#[cfg(not(debug_assertions))]
 static FILE_EXPLORER_JS: &str = include_str!("../static/js/file-explorer.js");
 #[cfg(not(debug_assertions))]
 static ADMIN_JS: &str = include_str!("../static/js/admin.js");
 #[cfg(not(debug_assertions))]
 static APP_JS: &str = include_str!("../static/js/app.js");
+#[cfg(not(debug_assertions))]
+static VENDOR_LIBFW_JS: &str = include_str!("../static/vendor/libfw-client.js");
+#[cfg(not(debug_assertions))]
+static VENDOR_LIBFW_WASM: &[u8] = include_bytes!("../static/vendor/libfw_client_bg.wasm");

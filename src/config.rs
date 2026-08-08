@@ -1,3 +1,4 @@
+use libfw_core::compress::CompressionFormat;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -5,6 +6,101 @@ use std::path::PathBuf;
 pub struct Config {
     pub server: ServerConfig,
     pub oidc: OidcConfig,
+    /// libfw file-transfer configuration. Every field has a default, so an
+    /// existing `config.toml` without a `[libfw]` table keeps working.
+    #[serde(default)]
+    pub libfw: LibfwConfig,
+}
+
+/// libfw transfer settings.
+///
+/// Two kinds of knobs live here:
+/// - **Server** knobs applied to the embedded libfw router
+///   (`compression`, `max_upload_size`).
+/// - **Client** knobs served to the browser via `config.js`
+///   (`window.ONESHARE_LIBFW`) so the frontend configures the `libfw-client`
+///   SDK from the backend instead of hard-coding them.
+///
+/// `compress` (client) mirrors `compression` (server): the SDK only negotiates
+/// zrip compression when the server actually serves it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LibfwConfig {
+    /// Download compression for the embedded server: `"zrip"` (the SDK can
+    /// decompress it) or `"none"` (default — safe for plain browser fetches,
+    /// which advertise `zstd` and would otherwise receive undecodable zrip
+    /// bytes). Values are parsed like libfw's `x-libfw-compress` header
+    /// (`zrip`/`zstd`/`identity`/`none`).
+    #[serde(default = "default_compression")]
+    pub compression: String,
+    /// Upper bound for a single upload body in bytes (default 100 GiB).
+    #[serde(default = "default_max_upload_size")]
+    pub max_upload_size: u64,
+    /// Client SDK: max parallel file transfers (default 4).
+    #[serde(default = "default_concurrency")]
+    pub concurrency: u32,
+    /// Client SDK: upload chunk size in bytes (default 2 MiB).
+    #[serde(default = "default_chunk_size")]
+    pub chunk_size: u64,
+    /// Client SDK: retries per chunk/file before failing (default 3).
+    #[serde(default = "default_max_retries")]
+    pub max_retries: u32,
+    /// Client SDK: initial exponential-backoff delay (ms, default 500).
+    #[serde(default = "default_base_retry_delay_ms")]
+    pub base_retry_delay_ms: u64,
+    /// Client SDK: backoff ceiling (ms, default 30 s).
+    #[serde(default = "default_max_retry_delay_ms")]
+    pub max_retry_delay_ms: u64,
+    /// Client SDK: per-request timeout (ms, default 60 s).
+    #[serde(default = "default_timeout_ms")]
+    pub timeout_ms: u64,
+}
+
+impl Default for LibfwConfig {
+    fn default() -> Self {
+        LibfwConfig {
+            compression: default_compression(),
+            max_upload_size: default_max_upload_size(),
+            concurrency: default_concurrency(),
+            chunk_size: default_chunk_size(),
+            max_retries: default_max_retries(),
+            base_retry_delay_ms: default_base_retry_delay_ms(),
+            max_retry_delay_ms: default_max_retry_delay_ms(),
+            timeout_ms: default_timeout_ms(),
+        }
+    }
+}
+
+fn default_compression() -> String {
+    "none".to_string()
+}
+fn default_max_upload_size() -> u64 {
+    100 * 1024 * 1024 * 1024 // 100 GiB, matches libfw's DEFAULT_MAX_UPLOAD_SIZE
+}
+fn default_concurrency() -> u32 {
+    4
+}
+fn default_chunk_size() -> u64 {
+    2 * 1024 * 1024 // 2 MiB
+}
+fn default_max_retries() -> u32 {
+    3
+}
+fn default_base_retry_delay_ms() -> u64 {
+    500
+}
+fn default_max_retry_delay_ms() -> u64 {
+    30_000
+}
+fn default_timeout_ms() -> u64 {
+    60_000
+}
+
+impl LibfwConfig {
+    /// Parse `compression` the same way libfw parses its `x-libfw-compress`
+    /// header. Anything other than `zrip`/`zstd` falls back to `None`.
+    pub fn compression_format(&self) -> CompressionFormat {
+        CompressionFormat::parse_header(&self.compression).unwrap_or(CompressionFormat::None)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -11,5 +11,8 @@
     "esbuild": "^0.28.0",
     "vite": "^7.0.0",
     "vite-plugin-html-minifier-terser": "^3.8.0"
+  },
+  "dependencies": {
+    "libfw-client": "0.1.0"
   }
 }

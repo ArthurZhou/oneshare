@@ -4,6 +4,10 @@ const API = {
   // Empty string means the domain root. Never has a trailing slash.
   base: ((typeof window.ONESHARE_BASE === 'string' && window.ONESHARE_BASE) || '').replace(/\/+$/, ''),
 
+  // Percent-encode each path segment separately so `/` stays a separator in the
+  // URL (the server's `{*path}` capture then decodes each segment correctly).
+  encodePath: (path) => String(path).split('/').map(encodeURIComponent).join('/'),
+
   async fetch(url, opts = {}) {
     const res = await fetch(this.base + url, { ...opts, credentials: 'same-origin' });
     if (!res.ok) {
@@ -37,15 +41,6 @@ const API = {
 
   // ── libfw Token ──
   getToken: (path, op = 'read') => API.fetch(`/api/files/token?path=${encodeURIComponent(path)}&op=${op}`),
-
-  // ── libfw Directory listing (bearer token) ──
-  listDir: (path, token) => {
-    const url = `${API.base}/dir/${encodeURIComponent(path)}`;
-    return fetch(url, { headers: { 'Authorization': `Bearer ${token}` } }).then(res => {
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      return res.json();
-    });
-  },
 
   // ── Admin ──
   getUsers: () => API.fetch('/api/admin/users'),

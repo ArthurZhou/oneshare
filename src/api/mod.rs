@@ -11,14 +11,33 @@ use std::sync::Arc;
 
 use crate::AppState;
 
-/// Serves the frontend bootstrap config: `window.ONESHARE_BASE` tells the
-/// browser what URL prefix the app is mounted under behind a reverse proxy, so
-/// the client can build correct absolute URLs (e.g. `/oneshare/api/me`).
+/// Serves the frontend bootstrap config:
+/// - `window.ONESHARE_BASE` tells the browser what URL prefix the app is
+///   mounted under behind a reverse proxy, so the client can build correct
+///   absolute URLs (e.g. `/oneshare/api/me`).
+/// - `window.ONESHARE_LIBFW` carries the client-side `libfw-client` SDK
+///   options, read from `[libfw]` in config.toml, so the frontend configures
+///   its libfw transfer client from the backend instead of hard-coding it.
+///   `compress` mirrors `[libfw] compression` (zrip ⇔ true) so the SDK only
+///   negotiates compression the server actually serves.
 pub async fn config_js(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    use libfw_core::compress::CompressionFormat;
+
     let base = state.config.base_url();
+    let libfw = &state.config.libfw;
+    let libfw_json = serde_json::json!({
+        "compress": libfw.compression_format() == CompressionFormat::Zrip,
+        "concurrency": libfw.concurrency,
+        "chunkSize": libfw.chunk_size,
+        "maxRetries": libfw.max_retries,
+        "baseRetryDelayMs": libfw.base_retry_delay_ms,
+        "maxRetryDelayMs": libfw.max_retry_delay_ms,
+        "timeoutMs": libfw.timeout_ms,
+    });
     let body = format!(
-        "// OneShare bootstrap config\nwindow.ONESHARE_BASE = {};\n",
-        serde_json::to_string(&base).unwrap_or_else(|_| "\"\"".to_string())
+        "// OneShare bootstrap config\nwindow.ONESHARE_BASE = {};\nwindow.ONESHARE_LIBFW = {};\n",
+        serde_json::to_string(&base).unwrap_or_else(|_| "\"\"".to_string()),
+        serde_json::to_string(&libfw_json).unwrap_or_else(|_| "{}".to_string())
     );
     (
         [(header::CONTENT_TYPE, "application/javascript; charset=utf-8")],
