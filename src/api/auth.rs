@@ -9,11 +9,13 @@ use axum::{
 use axum_extra::extract::cookie::CookieJar;
 use serde::Deserialize;
 use std::sync::Arc;
+use std::time::Instant;
 
 #[derive(Deserialize, Debug)]
 pub struct CallbackQuery {
     pub code: String,
     pub state: Option<String>,
+    pub nonce: Option<String>,
 }
 
 /// Helper: build an HTML error page that shows the error and provides a "back to login" link.
@@ -70,13 +72,22 @@ fn error_page(status: StatusCode, base: &str, title: &str, message: &str) -> Res
 pub async fn login(
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
-    let (url, csrf_state) = state.oidc_client.authorize_url();
+    let (url, csrf_state, nonce) = state.oidc_client.authorize_url();
 
-    state
-        .oidc_states
-        .lock()
-        .unwrap()
-        .insert(csrf_state, ());
+    {
+        let mut states = state.oidc_states.lock().unwrap();
+        // Prune expired pending states so the map cannot grow without bound
+        // (DoS via abandoned logins).
+        let now = Instant::now();
+        states.retain(|_, p| now.duration_since(p.created) < crate::OIDC_STATE_TTL);
+        states.insert(
+            csrf_state,
+            crate::OidcPending {
+                nonce,
+                created: now,
+            },
+        );
+    }
 
     Redirect::to(&url)
 }
@@ -114,36 +125,51 @@ pub async fn callback(
         }
     };
 
-    if state
-        .oidc_states
-        .lock()
-        .unwrap()
-        .remove(&csrf_secret)
-        .is_none()
-    {
-        let active_count = state.oidc_states.lock().unwrap().len();
-        tracing::error!(
-            "OIDC callback: state not found for csrf_state={}. \
-             This means: 1) the state expired or was already consumed, \
-             2) the login was initiated from a different session, \
-             3) the state was tampered with (CSRF). \
-             Active stored states: {}. Current stored keys: {:?}",
-            csrf_secret,
-            active_count,
-            state.oidc_states.lock().unwrap().keys().collect::<Vec<_>>(),
-        );
-        return error_page(
-            StatusCode::BAD_REQUEST,
-            &state.config.base_url(),
-            "Invalid State",
-            "The login session has expired or the state token is invalid. \
-             This happens if: \
-             (1) you waited too long after clicking login, \
-             (2) you used the browser's back button, or \
-             (3) a different browser/session initiated the login. \
-             Please try logging in again.",
-        );
+    let now = Instant::now();
+    let pending = {
+        let mut states = state.oidc_states.lock().unwrap();
+        // Prune expired pending states on every callback.
+        states.retain(|_, p| now.duration_since(p.created) < crate::OIDC_STATE_TTL);
+        states.remove(&csrf_secret)
     };
+    let pending = match pending {
+        Some(p) if now.duration_since(p.created) < crate::OIDC_STATE_TTL => p,
+        _ => {
+            let active_count = state.oidc_states.lock().unwrap().len();
+            tracing::error!(
+                "OIDC callback: state not found/expired for csrf_state={}. \
+                 Active stored states: {}.",
+                csrf_secret,
+                active_count,
+            );
+            return error_page(
+                StatusCode::BAD_REQUEST,
+                &state.config.base_url(),
+                "Invalid State",
+                "The login session has expired or the state token is invalid. \
+                 This happens if: \
+                 (1) you waited too long after clicking login, \
+                 (2) you used the browser's back button, or \
+                 (3) a different browser/session initiated the login. \
+                 Please try logging in again.",
+            );
+        }
+    };
+
+    // Validate the nonce when the provider echoes it (most do). A nonce that
+    // is present but mismatched is always rejected (replay/tamper). Some
+    // providers don't return a nonce; those still rely on the CSRF state.
+    if let Some(n) = &query.nonce {
+        if n != &pending.nonce {
+            tracing::error!("OIDC callback: nonce mismatch for state.");
+            return error_page(
+                StatusCode::BAD_REQUEST,
+                &state.config.base_url(),
+                "Invalid State",
+                "The login session is invalid. Please try logging in again.",
+            );
+        }
+    }
 
     // Step 2: exchange authorization code for tokens
     let user_info = match state
@@ -164,16 +190,12 @@ pub async fn callback(
                 StatusCode::UNAUTHORIZED,
                 &state.config.base_url(),
                 "Login Failed",
-                &format!(
-                    "Failed to complete login with the OIDC provider. \
-                     Details: {}. \
-                     This may be caused by: \
-                     (1) incorrect client secret, \
-                     (2) redirect URI mismatch, \
-                     (3) the authorization code has expired, or \
-                     (4) the OIDC provider is not properly configured.",
-                    e
-                ),
+                "Failed to complete login with the OIDC provider. \
+                 This may be caused by: \
+                 (1) incorrect client secret, \
+                 (2) redirect URI mismatch, \
+                 (3) the authorization code has expired, or \
+                 (4) the OIDC provider is not properly configured.",
             );
         }
     };
@@ -199,11 +221,8 @@ pub async fn callback(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 &state.config.base_url(),
                 "Database Error",
-                &format!(
-                    "Failed to save user information to the database. \
-                     Error: {}. Please try again or contact the administrator.",
-                    e
-                ),
+                "Failed to save user information to the database. \
+                 Please try again or contact the administrator.",
             );
         }
     };
@@ -211,7 +230,7 @@ pub async fn callback(
     // Step 4: create session
     let new_jar = match state
         .session_manager
-        .set_session(jar, &state.db, user.id)
+        .set_session(jar, &state.db, user.id, state.secure_cookies)
     {
         Ok(j) => {
             j
@@ -225,11 +244,7 @@ pub async fn callback(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 &state.config.base_url(),
                 "Session Error",
-                &format!(
-                    "Failed to create a login session. \
-                     Error: {}. Please try again.",
-                    e
-                ),
+                "Failed to create a login session. Please try again.",
             );
         }
     };

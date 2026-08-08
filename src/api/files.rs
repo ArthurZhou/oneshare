@@ -37,12 +37,15 @@ fn resolve_for_user(
     path: &str,
 ) -> Option<String> {
     let p = path.trim_start_matches('/');
-    if sees_real_tree(user, user_groups, acl_entries) {
+    let real = if sees_real_tree(user, user_groups, acl_entries) {
         Some(p.to_string())
     } else {
         let shares = acl::user_shares(user, user_groups, acl_entries);
         acl::resolve_virtual(p, &shares)
-    }
+    }?;
+    // Sanitize the resolved real path (rejects `..`, `\`, NUL) so a low-priv
+    // user can never escape their share via path traversal.
+    acl::sanitize_path(&real)
 }
 
 /// Build a [`FileEntry`] for a real directory entry under `real_dir`, mapping
@@ -138,8 +141,8 @@ pub async fn list(
     if sees_real_tree(&user, &user_groups, &acl_entries) {
         // Admins (and root-ACL holders) are NOT affected by the virtual root:
         // they browse the real filesystem tree so they can see real paths while
-        // configuring ACLs.
-        real_path = requested.clone();
+        // configuring ACLs. Still sanitize to reject `..`/`\` in the request.
+        real_path = acl::sanitize_path(&requested).ok_or(StatusCode::BAD_REQUEST)?;
     } else if at_root {
         show_share_root = true;
     } else {
@@ -292,9 +295,22 @@ pub async fn rename(
     let parent = old_full.parent().unwrap_or(state.config.root_dir());
     let new_full = parent.join(&body.new_name);
 
-    // Sanity check on new name
-    if body.new_name.contains('/') || body.new_name.contains("..") {
+    // Sanity check on new name: no path separators, traversal, `.`/`..`,
+    // backslashes (Windows separator) or NUL bytes.
+    if body.new_name.is_empty()
+        || body.new_name.contains('/')
+        || body.new_name.contains('\\')
+        || body.new_name.contains('\0')
+        || body.new_name == "."
+        || body.new_name == ".."
+        || body.new_name.contains("..")
+    {
         return Err(StatusCode::BAD_REQUEST);
+    }
+
+    // Refuse to silently overwrite an existing target (data-loss guard).
+    if new_full.exists() && new_full != old_full {
+        return Err(StatusCode::CONFLICT);
     }
 
     std::fs::rename(&old_full, &new_full).map_err(|e| {
@@ -324,6 +340,18 @@ pub async fn mv(
         return Err(StatusCode::NOT_FOUND);
     }
 
+    // Guard against destructive/pointless moves: same path, moving a directory
+    // into itself, or silently overwriting an existing destination.
+    if src_real == dst_real {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    if dst_full.starts_with(&src_full) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    if dst_full.exists() {
+        return Err(StatusCode::CONFLICT);
+    }
+
     std::fs::rename(&src_full, &dst_full).map_err(|e| {
         tracing::error!("Failed to move: {}", e);
         StatusCode::INTERNAL_SERVER_ERROR
@@ -341,7 +369,14 @@ pub async fn mkdir(
         .await?
         .ok_or(StatusCode::UNAUTHORIZED)?;
 
-    if body.name.contains('/') || body.name.contains("..") {
+    if body.name.is_empty()
+        || body.name.contains('/')
+        || body.name.contains('\\')
+        || body.name.contains('\0')
+        || body.name == "."
+        || body.name == ".."
+        || body.name.contains("..")
+    {
         return Err(StatusCode::BAD_REQUEST);
     }
 

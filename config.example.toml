@@ -6,11 +6,16 @@ listen_addr = "0.0.0.0"
 listen_port = 3456
 root_dir = "./data"
 database_url = "oneshare.db"
-session_cookie_key = "0123456789abcdef0123456789abcdef"
-hmac_secret = "change-me-to-a-random-32-byte-secret"
+# IMPORTANT: set a strong random value (>= 16 bytes). The server refuses to
+# start with the default/empty secret.
+hmac_secret = "REPLACE_WITH_A_STRONG_RANDOM_SECRET_AT_LEAST_16_BYTES"
 # URL prefix (base path) when running behind a reverse proxy on a shared
 # domain, e.g. "/oneshare". Leave empty to serve at the domain root.
 base_url = ""
+# Mark the session cookie Secure (HTTPS-only). Enable when serving over TLS.
+session_cookie_secure = false
+# Optional CORS allowlist of origins (empty = same-origin only).
+allowed_origins = []
 
 [oidc]
 issuer_url = "https://login.example.com"

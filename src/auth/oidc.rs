@@ -17,7 +17,6 @@ struct OidcDiscovery {
 #[derive(Clone)]
 pub struct OidcClient {
     client: Client,
-    issuer_url: String,
     client_id: String,
     client_secret: String,
     redirect_uri: String,
@@ -120,7 +119,6 @@ impl OidcClient {
 
         Ok(OidcClient {
             client,
-            issuer_url: config.issuer_url.clone(),
             client_id: config.client_id.clone(),
             client_secret: config.client_secret.clone(),
             redirect_uri: config.redirect_uri.clone(),
@@ -222,25 +220,35 @@ impl OidcClient {
         Some(discovery)
     }
 
-    /// Build the authorization URL. Returns (url, csrf_state).
-    pub fn authorize_url(&self) -> (String, String) {
+    /// Build the authorization URL. Returns (url, csrf_state, nonce).
+    ///
+    /// The `state` guards against login-CSRF; the `nonce` is echoed back by
+    /// the provider and validated on the callback for replay/tamper
+    /// protection. Query parameters are percent-encoded so a redirect_uri or
+    /// client_id with special characters survives the round-trip.
+    pub fn authorize_url(&self) -> (String, String, String) {
         let csrf_state = uuid::Uuid::new_v4().to_string();
+        let nonce = uuid::Uuid::new_v4().to_string();
 
-        let url = format!(
-            "{}?client_id={}&redirect_uri={}&response_type=code&state={}&scope=openid+profile+email",
-            self.authorization_endpoint,
-            self.client_id,
-            self.redirect_uri,
-            csrf_state,
-        );
+        let query = url::form_urlencoded::Serializer::new(String::new())
+            .append_pair("client_id", &self.client_id)
+            .append_pair("redirect_uri", &self.redirect_uri)
+            .append_pair("response_type", "code")
+            .append_pair("state", &csrf_state)
+            .append_pair("nonce", &nonce)
+            .append_pair("scope", "openid profile email")
+            .finish();
+
+        let url = format!("{}?{}", self.authorization_endpoint, query);
 
         tracing::debug!(
-            "Generated authorize URL: {}... (csrf_state={})",
+            "Generated authorize URL: {}... (csrf_state={}, nonce={})",
             &url[..url.len().min(200)],
             csrf_state,
+            nonce,
         );
 
-        (url, csrf_state)
+        (url, csrf_state, nonce)
     }
 
     /// Exchange an authorization code for user info.

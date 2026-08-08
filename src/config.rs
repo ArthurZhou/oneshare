@@ -109,13 +109,22 @@ pub struct ServerConfig {
     pub listen_port: u16,
     pub root_dir: PathBuf,
     pub database_url: String,
-    pub session_cookie_key: String,
     pub hmac_secret: String,
     /// Optional URL prefix (base path) so OneShare can be served behind a
     /// reverse proxy under a sub-path of a shared domain, e.g. "/oneshare".
     /// Empty or "/" means the app is served at the domain root.
     #[serde(default)]
     pub base_url: String,
+    /// Mark the session cookie `Secure` (HTTPS-only). Enable when serving over
+    /// TLS (e.g. behind an HTTPS reverse proxy). Default `false` for local HTTP.
+    #[serde(default)]
+    pub session_cookie_secure: bool,
+    /// Optional list of origins allowed to make cross-origin requests (CORS).
+    /// Empty (default) = same-origin only; cross-origin browser requests are
+    /// blocked. The frontend is served by this app, so leave empty unless a
+    /// separate origin really needs to call the API.
+    #[serde(default)]
+    pub allowed_origins: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -157,10 +166,6 @@ impl Config {
 
     pub fn database_url(&self) -> &str {
         &self.server.database_url
-    }
-
-    pub fn session_cookie_key(&self) -> &str {
-        &self.server.session_cookie_key
     }
 
     pub fn hmac_secret(&self) -> &str {

@@ -162,10 +162,45 @@ pub fn user_shares(
     shares
 }
 
+/// Whether a path segment is safe to use as a filesystem component.
+///
+/// Rejects empty, `.`/`..` (traversal), and any segment containing a backslash
+/// (`\` is a path separator on Windows, so it could smuggle `..` past the
+/// `/`-based ACL prefix matching) or a NUL byte.
+pub fn is_safe_segment(seg: &str) -> bool {
+    !seg.is_empty() && seg != "." && seg != ".." && !seg.contains('\\') && !seg.contains('\0')
+}
+
+/// Validate and normalize a path supplied by the frontend, rejecting any
+/// segment that is `.`/`..` or contains a backslash/NUL. Returns the
+/// normalized relative path (no leading/trailing slashes) or `None` if unsafe.
+///
+/// This is the guard that stops a user from escaping their share boundary:
+/// ACL matching is prefix-based, so an untrusted `..` (or `\` on Windows)
+/// would otherwise let a low-privilege user read/write sibling directories.
+pub fn sanitize_path(path: &str) -> Option<String> {
+    if path.contains('\0') || path.contains('\\') {
+        return None;
+    }
+    let mut out: Vec<&str> = Vec::new();
+    for seg in path.split('/') {
+        if seg.is_empty() {
+            continue;
+        }
+        if seg == "." || seg == ".." {
+            return None;
+        }
+        out.push(seg);
+    }
+    Some(out.join("/"))
+}
+
 /// Map a virtual browse path back to a real path using the user's shares.
 ///
 /// The virtual root (`""`) has no real path and returns `None`. Any other
 /// path's first segment names a share; the rest is appended underneath it.
+/// Every segment below the share is validated with [`is_safe_segment`] so a
+/// malicious `..`/`\` in the request cannot escape the share boundary.
 pub fn resolve_virtual(virtual_path: &str, shares: &[Share]) -> Option<String> {
     let vp = virtual_path.trim_matches('/');
     if vp.is_empty() {
@@ -173,12 +208,19 @@ pub fn resolve_virtual(virtual_path: &str, shares: &[Share]) -> Option<String> {
     }
     let mut segs = vp.split('/');
     let first = segs.next()?;
+    if !is_safe_segment(first) {
+        return None;
+    }
     let share = shares.iter().find(|s| s.virtual_name == first)?;
     let rest: Vec<&str> = segs.collect();
+    // Reject traversal/backslash in the path below the share.
+    if rest.iter().any(|s| !is_safe_segment(s)) {
+        return None;
+    }
     if rest.is_empty() {
-        Some(share.real_path.clone())
+        sanitize_path(&share.real_path)
     } else {
-        Some(format!("{}/{}", share.real_path, rest.join("/")))
+        sanitize_path(&format!("{}/{}", share.real_path, rest.join("/")))
     }
 }
 
@@ -399,5 +441,47 @@ mod tests {
         assert!(Permission::Write.covers(&Permission::Write));
         assert!(Permission::Admin.covers(&Permission::Read));
         assert!(Permission::Admin.covers(&Permission::Write));
+    }
+
+    #[test]
+    fn sanitize_rejects_traversal() {
+        assert_eq!(sanitize_path("a/b/c.txt").as_deref(), Some("a/b/c.txt"));
+        assert_eq!(sanitize_path("").as_deref(), Some(""));
+        assert_eq!(sanitize_path("/a//b/").as_deref(), Some("a/b"));
+        assert_eq!(sanitize_path("a/../b"), None);
+        assert_eq!(sanitize_path("../secret"), None);
+        assert_eq!(sanitize_path("a\\..\\b"), None);
+        assert_eq!(sanitize_path("a/./b"), None);
+        assert_eq!(sanitize_path("a/\0/b"), None);
+    }
+
+    #[test]
+    fn resolve_virtual_blocks_traversal_escape() {
+        let shares = vec![Share { virtual_name: "public2".into(), real_path: "nested/public2".into() }];
+        // Normal navigation inside the share still works.
+        assert_eq!(
+            resolve_virtual("public2/sub/file.txt", &shares),
+            Some("nested/public2/sub/file.txt".to_string())
+        );
+        // `..` cannot escape the share boundary to read sibling/root paths.
+        assert_eq!(resolve_virtual("public2/../../secret", &shares), None);
+        assert_eq!(resolve_virtual("public2/..", &shares), None);
+        assert_eq!(resolve_virtual("public2/./x", &shares), None);
+        // Backslash cannot smuggle traversal on Windows.
+        assert_eq!(resolve_virtual("public2/..\\secret", &shares), None);
+        assert_eq!(resolve_virtual("public2/..\\..\\etc", &shares), None);
+    }
+
+    #[test]
+    fn traversal_does_not_grant_access() {
+        // A user with read on nested/public2 must NOT be able to read a sibling
+        // via `..`: the ACL prefix check alone would pass, but resolve_virtual
+        // now refuses the path before the ACL engine ever sees it.
+        let entries = vec![acl(1, "nested/public2", None, Some(10), "read")];
+        let groups = [10];
+        let shares = user_shares(&user(1, false), &groups, &entries);
+        // The traversal path resolves to None -> caller returns 404/403.
+        assert_eq!(resolve_virtual("public2/../../secret", &shares), None);
+        assert_eq!(resolve_virtual("public2/..", &shares), None);
     }
 }

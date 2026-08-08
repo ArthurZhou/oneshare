@@ -14,7 +14,7 @@ use crate::db::Database;
 use crate::libtoken::OneshareTokenVerifier;
 use axum::{
     body::Body,
-    http::{Request, Response, StatusCode, Uri},
+    http::{HeaderValue, Request, Response, StatusCode, Uri},
     routing::{any_service, delete, get, post, put},
     Router,
 };
@@ -26,16 +26,30 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
+use std::time::{Duration, Instant};
 use tower::{Layer, Service, ServiceBuilder};
-use tower_http::cors::CorsLayer;
+use tower_http::cors::{Any, CorsLayer};
+
+/// A pending OIDC login. The CSRF `state` maps to a nonce (validated on the
+/// callback for replay/tamper protection) and a creation time so stale states
+/// can be pruned instead of growing without bound.
+pub struct OidcPending {
+    pub nonce: String,
+    pub created: Instant,
+}
+
+/// How long a generated OIDC state stays valid before it is pruned.
+pub const OIDC_STATE_TTL: Duration = Duration::from_secs(10 * 60);
 
 pub struct AppState {
     pub db: Database,
     pub config: Config,
     pub oidc_client: OidcClient,
-    pub oidc_states: Mutex<HashMap<String, ()>>,
+    pub oidc_states: Mutex<HashMap<String, OidcPending>>,
     pub session_manager: SessionManager,
     pub hmac_key: String,
+    /// Whether the session cookie should be marked `Secure` (HTTPS-only).
+    pub secure_cookies: bool,
 }
 
 /// Forward a request to an inner service with a fresh (empty) extension map.
@@ -488,6 +502,21 @@ async fn main() {
 
     let config = Config::from_file("config.toml").expect("Failed to load config");
 
+    // Refuse to start with an empty, too-short, or default `hmac_secret`: it
+    // signs libfw bearer tokens that grant file access, so a weak default lets
+    // anyone forge a token and read/write every file.
+    let raw_hmac = config.hmac_secret();
+    let trimmed = raw_hmac.trim();
+    if trimmed.is_empty()
+        || trimmed == "change-me-to-a-random-32-byte-secret"
+        || trimmed.len() < 16
+    {
+        panic!(
+            "Refusing to start: [server] hmac_secret must be set to a strong random value \
+             (>= 16 bytes, not the default) in config.toml before running."
+        );
+    }
+
     std::fs::create_dir_all(config.root_dir()).expect("Failed to create root dir");
 
     let db = Database::new(config.database_url()).expect("Failed to initialize database");
@@ -525,6 +554,7 @@ async fn main() {
         oidc_states: Mutex::new(HashMap::new()),
         session_manager,
         hmac_key: hmac_secret,
+        secure_cookies: config.server.session_cookie_secure,
     });
 
     let libfw_app = libfw_router(libfw_state);
@@ -537,7 +567,7 @@ async fn main() {
     let file_service = VirtualTranslate::new(FreshPathParams::new(libfw_app.clone()), state.clone());
     let dir_service = VirtualTranslate::new(FreshPathParams::new(libfw_app), state.clone());
 
-    let app = Router::new()
+    let mut app = Router::new()
         .route("/auth/login", get(api::auth::login))
         .route("/auth/callback", get(api::auth::callback))
         .route("/auth/logout", get(api::auth::logout))
@@ -569,8 +599,26 @@ async fn main() {
         // release builds serve the minified assets embedded by build.rs. See
         // src/statics.rs.
         .fallback_service(crate::statics::frontend_router())
-        .layer(CorsLayer::permissive())
         .with_state(state);
+
+    // CORS: only allow explicitly-configured origins ([server] allowed_origins).
+    // When empty (the default) no CORS headers are emitted and cross-origin
+    // browser requests are blocked, which is correct for the same-origin
+    // frontend. Never permissive.
+    if !config.server.allowed_origins.is_empty() {
+        let origins: Vec<HeaderValue> = config
+            .server
+            .allowed_origins
+            .iter()
+            .filter_map(|o| o.parse::<HeaderValue>().ok())
+            .collect();
+        app = app.layer(
+            CorsLayer::new()
+                .allow_origin(origins)
+                .allow_methods(Any)
+                .allow_headers(Any),
+        );
+    }
 
     // Support running behind a reverse proxy on a shared domain: when a URL
     // prefix is configured (e.g. base_url = "/oneshare"), strip it from every

@@ -17,13 +17,14 @@ impl SessionManager {
         jar: CookieJar,
         db: &Database,
         user_id: i64,
+        secure: bool,
     ) -> Result<CookieJar, String> {
         let session_id = db.create_session(user_id).map_err(|e| e.to_string())?;
         let jar = jar.add(
             Cookie::build((SESSION_COOKIE, session_id))
                 .path("/")
                 .http_only(true)
-                .secure(false)
+                .secure(secure)
                 .same_site(axum_extra::extract::cookie::SameSite::Lax)
                 .build(),
         );
