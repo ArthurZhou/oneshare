@@ -289,15 +289,16 @@ pub async fn rename(
     let parent = old_full.parent().unwrap_or(state.config.root_dir());
     let new_full = parent.join(&body.new_name);
 
-    // Sanity check on new name: no path separators, traversal, `.`/`..`,
-    // backslashes (Windows separator) or NUL bytes.
+    // Sanity check on new name: no path separators, no `.`/`..` (which would
+    // be a traversal escape), no backslashes (Windows separator) or NUL bytes.
+    // Note: `contains("..")` is intentionally NOT used — a name like `a..b`
+    // is perfectly valid; only an exact `.`/`..` must be rejected.
     if body.new_name.is_empty()
         || body.new_name.contains('/')
         || body.new_name.contains('\\')
         || body.new_name.contains('\0')
         || body.new_name == "."
         || body.new_name == ".."
-        || body.new_name.contains("..")
     {
         return Err(StatusCode::BAD_REQUEST);
     }
@@ -365,7 +366,6 @@ pub async fn mkdir(
         || body.name.contains('\0')
         || body.name == "."
         || body.name == ".."
-        || body.name.contains("..")
     {
         return Err(StatusCode::BAD_REQUEST);
     }

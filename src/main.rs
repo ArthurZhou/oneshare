@@ -307,9 +307,24 @@ async fn rewrite_dir_response(
     }
 
     let (parts, body) = response.into_parts();
-    let bytes = match to_bytes(body, 4 * 1024 * 1024).await {
+    // A directory listing realistically never approaches this; the buffer is
+    // only a safety net. An over-limit body is data loss waiting to happen, so
+    // on the (rare) overflow we answer a real 500 instead of a misleading
+    // empty 200 — an empty "successful" listing would silently hide the whole
+    // directory from the user.
+    let limit: usize = 64 * 1024 * 1024;
+    let bytes = match to_bytes(body, limit).await {
         Ok(b) => b,
-        Err(_) => return Response::from_parts(parts, Body::empty()),
+        Err(_) => {
+            tracing::warn!(
+                "rewrite_dir_response: listing body exceeded {} bytes; returning 500",
+                limit
+            );
+            return Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .body(Body::empty())
+                .unwrap();
+        }
     };
     let mut value: serde_json::Value = match serde_json::from_slice(&bytes) {
         Ok(v) => v,
