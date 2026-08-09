@@ -350,6 +350,7 @@ impl OidcClient {
             name: Option<String>,
             email: Option<String>,
             preferred_username: Option<String>,
+            role: Option<String>,
         }
 
         let user_data: UserInfoResponse =
@@ -371,10 +372,13 @@ impl OidcClient {
             .or(user_data.preferred_username)
             .unwrap_or_else(|| sub.clone());
         let email = user_data.email.unwrap_or_default();
+        // Optional `role` claim (may be a plain string or, e.g., a JSON
+        // array). We keep the raw value and only use it for group matching.
+        let role = user_data.role.map(|r| r.trim().to_string()).filter(|r| !r.is_empty());
 
         tracing::debug!(
-            "User info extracted: sub={}, name={}, email={}",
-            sub, name, email,
+            "User info extracted: sub={}, name={}, email={}, role={:?}",
+            sub, name, email, role,
         );
 
         if sub.is_empty() {
@@ -384,7 +388,7 @@ impl OidcClient {
             ));
         }
 
-        Ok(OidcUserInfo { sub, name, email })
+        Ok(OidcUserInfo { sub, name, email, role })
     }
 }
 
@@ -393,4 +397,6 @@ pub struct OidcUserInfo {
     pub sub: String,
     pub name: String,
     pub email: String,
+    /// Optional `role` claim returned by the provider's userinfo endpoint.
+    pub role: Option<String>,
 }

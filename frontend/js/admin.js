@@ -100,17 +100,21 @@ async function renderGroupsPanel() {
   groups.forEach(g => {
     const count = typeof g.member_count === 'number' ? g.member_count : 0;
     const isDefault = g.name === 'default';
+    const isGuest = g.name === 'guest';
+    const isReserved = isDefault || isGuest;
     rows += `<div class="admin-group-row">
       <div>
         <strong>👥 ${escapeHtml(g.name)}</strong>
         ${isDefault ? '<span class="admin-tag">default</span>' : ''}
+        ${isGuest ? '<span class="admin-tag">guest</span>' : ''}
         <span class="member-count">${count} member${count === 1 ? '' : 's'}</span>
         ${g.description ? `<span class="group-desc">— ${escapeHtml(g.description)}</span>` : ''}
         ${isDefault ? '<span class="group-desc">(grants permissions to users not in any group)</span>' : ''}
+        ${isGuest ? '<span class="group-desc">(grants permissions to unauthenticated visitors)</span>' : ''}
       </div>
       <div>
-        <button class="btn btn-sm" data-manage-group="${g.id}" data-name="${escapeHtml(g.name)}">👤 Manage</button>
-        ${isDefault ? '' : `<button class="btn btn-sm btn-danger" data-delete-group="${g.id}">×</button>`}
+        <button class="btn btn-sm" data-manage-group="${g.id}" data-name="${escapeHtml(g.name)}"${isReserved ? ' disabled' : ''}>👤 Manage</button>
+        ${isReserved ? '' : `<button class="btn btn-sm btn-danger" data-delete-group="${g.id}">×</button>`}
       </div>
     </div>`;
   });
@@ -156,6 +160,7 @@ function wireGroupEvents() {
 }
 
 async function showGroupManage(groupId, groupName) {
+  const isReserved = groupName === 'default' || groupName === 'guest';
   const [users, members] = await Promise.all([API.getUsers(), API.getGroupMembers(groupId)]);
   const memberIds = new Set(members.map(m => m.id));
 
@@ -169,13 +174,17 @@ async function showGroupManage(groupId, groupName) {
         <span>👤 ${escapeHtml(u.display_name)}
           ${isMember ? '<span class="member-tag">✓ member</span>' : ''}
         </span>
-        <button class="btn btn-sm ${btnClass}" data-toggle-membership="${u.id}" data-gid="${groupId}" data-member="${isMember}">
+        <button class="btn btn-sm ${btnClass}" ${isReserved ? 'disabled' : ''} data-toggle-membership="${u.id}" data-gid="${groupId}" data-member="${isMember}">
           ${isMember ? 'Remove' : '+ Add'}
         </button>
       </div>`;
     }).join('');
 
-  const html = `<div class="member-summary">${members.length} of ${users.length} users are in this group</div>
+  const reservedNote = isReserved
+    ? `<div class="member-summary" style="color:#b45309">🔒 Membership of the ${escapeHtml(groupName)} group is managed automatically and cannot be changed.</div>`
+    : `<div class="member-summary">${members.length} of ${users.length} users are in this group</div>`;
+
+  const html = `${reservedNote}
     <div style="max-height:300px;overflow-y:auto">
       ${rows || '<div class="empty">No users</div>'}
     </div>`;
@@ -186,6 +195,7 @@ async function showGroupManage(groupId, groupName) {
   setTimeout(() => {
     document.querySelectorAll('[data-toggle-membership]').forEach(btn => {
       btn.onclick = async () => {
+        if (isReserved) return;
         const userId = parseInt(btn.dataset.toggleMembership);
         const isMember = btn.dataset.member === 'true';
         try {

@@ -105,6 +105,12 @@ pub async fn add_user_to_group(
     if u.is_admin != 1 {
         return Err(StatusCode::FORBIDDEN);
     }
+    // The reserved `default` and `guest` groups have their members derived
+    // automatically (unassigned users and unauthenticated visitors) and so
+    // must not have their membership edited by hand.
+    if is_reserved_group(&state, body.group_id) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
     state
         .db
         .add_user_to_group(body.user_id, body.group_id)
@@ -123,11 +129,26 @@ pub async fn remove_user_from_group(
     if u.is_admin != 1 {
         return Err(StatusCode::FORBIDDEN);
     }
+    if is_reserved_group(&state, body.group_id) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
     state
         .db
         .remove_user_from_group(body.user_id, body.group_id)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(StatusCode::OK)
+}
+
+/// True if `group_id` refers to one of the reserved `default`/`guest` groups,
+/// whose membership is managed automatically and cannot be edited by admins.
+fn is_reserved_group(state: &AppState, group_id: i64) -> bool {
+    match state.db.get_group_by_id(group_id) {
+        Ok(Some(g)) => {
+            g.name == crate::db::Database::DEFAULT_GROUP_NAME
+                || g.name == crate::db::Database::GUEST_GROUP_NAME
+        }
+        _ => false,
+    }
 }
 
 // ── Users ──

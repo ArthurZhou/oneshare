@@ -176,13 +176,34 @@ impl Database {
             conn.query_row("SELECT COUNT(*) FROM users", [], |r| r.get(0))?;
         let is_admin = if user_count == 0 { 1 } else { 0 };
 
-        conn.execute(
-            "INSERT INTO users (oidc_sub, display_name, email, is_admin) VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT(oidc_sub) DO UPDATE SET display_name=?2, email=?3",
-            params![oidc_sub, display_name, email, is_admin],
-        )?;
+        // Two-step update-or-insert. We deliberately avoid
+        // `INSERT ... ON CONFLICT DO UPDATE`: SQLite allocates a rowid on the
+        // insert attempt even when the upsert resolves via the UPDATE branch,
+        // so every re-login of an existing user would burn a fresh id and
+        // inflate the `users.id` sequence (observed ids 1, 5, 34 ...).
+        let existing: Option<i64> = match conn.query_row(
+            "SELECT id FROM users WHERE oidc_sub = ?1",
+            params![oidc_sub],
+            |r| r.get(0),
+        ) {
+            Ok(id) => Some(id),
+            Err(rusqlite::Error::QueryReturnedNoRows) => None,
+            Err(e) => return Err(e),
+        };
 
-        // ????? conn ??????,?????? self.get_user_by_oidc_sub ?? Mutex ??
+        if let Some(id) = existing {
+            conn.execute(
+                "UPDATE users SET display_name = ?1, email = ?2 WHERE id = ?3",
+                params![display_name, email, id],
+            )?;
+        } else {
+            conn.execute(
+                "INSERT INTO users (oidc_sub, display_name, email, is_admin) VALUES (?1, ?2, ?3, ?4)",
+                params![oidc_sub, display_name, email, is_admin],
+            )?;
+        }
+
+        // ??? conn ???,?????? self.get_user_by_oidc_sub ?? Mutex ??
         let mut stmt = conn.prepare(
             "SELECT id, oidc_sub, display_name, email, is_admin FROM users WHERE oidc_sub = ?",
         )?;
@@ -293,6 +314,29 @@ impl Database {
              GROUP BY g.id",
         )?;
         let mut rows = stmt.query(params![group_id])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some(GroupRow {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                description: row.get(2)?,
+                member_count: row.get(3)?,
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Look up a group by its (unique) name.
+    pub fn get_group_by_name(&self, name: &str) -> Result<Option<GroupRow>, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT g.id, g.name, g.description, COUNT(ug.user_id)
+             FROM groups_ g
+             LEFT JOIN user_groups ug ON ug.group_id = g.id
+             WHERE g.name = ?
+             GROUP BY g.id",
+        )?;
+        let mut rows = stmt.query(params![name])?;
         if let Some(row) = rows.next()? {
             Ok(Some(GroupRow {
                 id: row.get(0)?,

@@ -227,6 +227,41 @@ pub async fn callback(
         }
     };
 
+    // Step 3.5: auto-join a group whose name matches the provider's `role`
+    // claim (if any). This lets an admin pre-create a group named after a
+    // role (e.g. "ops") and have every SSO user carrying that role become a
+    // member automatically. Only matches the user's *current* groups; it
+    // never removes the user from any group.
+    if let Some(role) = &user_info.role {
+        match state.db.get_group_by_name(role) {
+            Ok(Some(group)) => {
+                if let Err(e) = state.db.add_user_to_group(user.id, group.id) {
+                    tracing::warn!(
+                        "OIDC callback: failed to add user {} to group {} ({}) from role claim: {}",
+                        user.id, group.id, group.name, e,
+                    );
+                } else {
+                    tracing::info!(
+                        "OIDC callback: auto-joined user {} to group {} ({}) from role claim",
+                        user.id, group.id, group.name,
+                    );
+                }
+            }
+            Ok(None) => {
+                tracing::debug!(
+                    "OIDC callback: role claim '{}' does not match any existing group; skipping.",
+                    role,
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "OIDC callback: failed to look up group by role claim '{}': {}",
+                    role, e,
+                );
+            }
+        }
+    }
+
     // Step 4: create session
     let new_jar = match state
         .session_manager
