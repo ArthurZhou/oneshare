@@ -17,7 +17,7 @@ var LibfwClient = (() => {
   };
   var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
 
-  // node_modules/.pnpm/libfw-client@0.1.2/node_modules/libfw-client/index.js
+  // node_modules/.pnpm/libfw-client@0.1.3/node_modules/libfw-client/index.js
   var libfw_client_exports = {};
   __export(libfw_client_exports, {
     LibfwClient: () => LibfwClient2,
@@ -25,22 +25,8 @@ var LibfwClient = (() => {
     default: () => libfw_client_default
   });
 
-  // node_modules/.pnpm/libfw-client@0.1.2/node_modules/libfw-client/pkg/libfw_client.js
+  // node_modules/.pnpm/libfw-client@0.1.3/node_modules/libfw-client/pkg/libfw_client.js
   var import_meta = {};
-  // This UMD bundle was built from an ESM module, so `import.meta` is not
-  // available in a classic <script> (esbuild warns it will be empty). Derive
-  // this script's own URL so the adjacent WASM engine (`libfw_client_bg.wasm`)
-  // resolves next to it under any URL prefix (the SDK does
-  // `new URL("libfw_client_bg.wasm", import_meta.url)`).
-  import_meta.url = (function () {
-    if (typeof document === "undefined") return "";
-    if (document.currentScript && document.currentScript.src) return document.currentScript.src;
-    var scripts = document.getElementsByTagName("script");
-    for (var i = scripts.length - 1; i >= 0; i--) {
-      if (/libfw-client\.js/.test(scripts[i].src || "")) return scripts[i].src;
-    }
-    return "";
-  })();
   var LibfwClient = class {
     __destroy_into_raw() {
       const ptr = this.__wbg_ptr;
@@ -413,6 +399,10 @@ var LibfwClient = (() => {
           return ret;
         }, arguments);
       },
+      __wbg_of_5f1b88183ddb5d94: function(arg0, arg1) {
+        const ret = Array.of(arg0, arg1);
+        return ret;
+      },
       __wbg_prototypesetcall_4770620bbe4688a0: function(arg0, arg1, arg2) {
         Uint8Array.prototype.set.call(getArrayU8FromWasm0(arg0, arg1), arg2);
       },
@@ -427,6 +417,10 @@ var LibfwClient = (() => {
       __wbg_queueMicrotask_6a09b7bc46549209: function(arg0) {
         queueMicrotask(arg0);
       },
+      __wbg_race_ac5c7b465abcfa15: function(arg0) {
+        const ret = Promise.race(arg0);
+        return ret;
+      },
       __wbg_read_8afa15f12a160ef8: function(arg0) {
         const ret = arg0.read();
         return ret;
@@ -434,6 +428,12 @@ var LibfwClient = (() => {
       __wbg_resolve_2191a4dfe481c25b: function(arg0) {
         const ret = Promise.resolve(arg0);
         return ret;
+      },
+      __wbg_setTimeout_725a27c387d005c7: function() {
+        return handleError(function(arg0, arg1, arg2, arg3) {
+          const ret = arg0.setTimeout(arg1, arg2, arg3);
+          return ret;
+        }, arguments);
       },
       __wbg_setTimeout_cfa2cf195c3738db: function() {
         return handleError(function(arg0, arg1, arg2) {
@@ -773,7 +773,94 @@ ${val.stack}`;
     return __wbg_finalize_init(instance, module);
   }
 
-  // node_modules/.pnpm/libfw-client@0.1.2/node_modules/libfw-client/index.js
+  // node_modules/.pnpm/libfw-client@0.1.3/node_modules/libfw-client/zip.js
+  var CRC_TABLE = (() => {
+    const table = new Uint32Array(256);
+    for (let n = 0; n < 256; n += 1) {
+      let c = n;
+      for (let k = 0; k < 8; k += 1) {
+        c = c & 1 ? 3988292384 ^ c >>> 1 : c >>> 1;
+      }
+      table[n] = c >>> 0;
+    }
+    return table;
+  })();
+  function crc32(bytes) {
+    let crc = 4294967295;
+    for (let i = 0; i < bytes.length; i += 1) {
+      crc = CRC_TABLE[(crc ^ bytes[i]) & 255] ^ crc >>> 8;
+    }
+    return (crc ^ 4294967295) >>> 0;
+  }
+  function createZip(entries) {
+    const encoder = new TextEncoder();
+    const body = [];
+    const central = [];
+    let offset = 0;
+    for (const entry of entries) {
+      const nameBytes = encoder.encode(entry.name);
+      const data = entry.data;
+      const crc = crc32(data);
+      const local = new Uint8Array(30 + nameBytes.length);
+      const dv = new DataView(local.buffer);
+      dv.setUint32(0, 67324752, true);
+      dv.setUint16(4, 20, true);
+      dv.setUint16(6, 0, true);
+      dv.setUint16(8, 0, true);
+      dv.setUint16(10, 0, true);
+      dv.setUint16(12, 33, true);
+      dv.setUint32(14, crc, true);
+      dv.setUint32(18, data.length, true);
+      dv.setUint32(22, data.length, true);
+      dv.setUint16(26, nameBytes.length, true);
+      dv.setUint16(28, 0, true);
+      local.set(nameBytes, 30);
+      body.push(local, data);
+      central.push({ nameBytes, crc, size: data.length, offset });
+      offset += local.length + data.length;
+    }
+    const dir = [];
+    let cdSize = 0;
+    for (const c of central) {
+      const cd = new Uint8Array(46 + c.nameBytes.length);
+      const dv = new DataView(cd.buffer);
+      dv.setUint32(0, 33639248, true);
+      dv.setUint16(4, 20, true);
+      dv.setUint16(6, 20, true);
+      dv.setUint16(8, 0, true);
+      dv.setUint16(10, 0, true);
+      dv.setUint16(12, 0, true);
+      dv.setUint16(14, 33, true);
+      dv.setUint32(16, c.crc, true);
+      dv.setUint32(20, c.size, true);
+      dv.setUint32(24, c.size, true);
+      dv.setUint16(28, c.nameBytes.length, true);
+      dv.setUint16(30, 0, true);
+      dv.setUint16(32, 0, true);
+      dv.setUint16(34, 0, true);
+      dv.setUint16(36, 0, true);
+      dv.setUint32(38, 0, true);
+      dv.setUint32(42, c.offset, true);
+      cd.set(c.nameBytes, 46);
+      dir.push(cd);
+      cdSize += cd.length;
+    }
+    const cdOffset = offset;
+    const eocd = new Uint8Array(22);
+    const edv = new DataView(eocd.buffer);
+    edv.setUint32(0, 101010256, true);
+    edv.setUint16(4, 0, true);
+    edv.setUint16(6, 0, true);
+    edv.setUint16(8, central.length, true);
+    edv.setUint16(10, central.length, true);
+    edv.setUint32(12, cdSize, true);
+    edv.setUint32(16, cdOffset, true);
+    edv.setUint16(20, 0, true);
+    return new Blob([...body, ...dir, eocd], { type: "application/zip" });
+  }
+
+  // node_modules/.pnpm/libfw-client@0.1.3/node_modules/libfw-client/index.js
+  var import_meta2 = {};
   var IDB_NAME = "libfw";
   var IDB_STORE = "resume";
   var LibfwError = class extends Error {
@@ -842,11 +929,51 @@ ${val.stack}`;
         tx.oncomplete = () => resolve();
         tx.onerror = () => reject(new LibfwError(`idb put: ${tx.error}`, "idb"));
       });
+    },
+    /**
+     * Delete every key whose `direction:` prefix matches (e.g. all
+     * `download:*` keys) while leaving the other direction intact.
+     * @param {string} direction `'upload'` | `'download'`
+     * @returns {Promise<number>} number of records removed
+     */
+    async clearDirection(direction) {
+      const db = await Idb.open();
+      const prefix = `${direction}:`;
+      const keys = await new Promise((resolve, reject) => {
+        const tx = db.transaction(IDB_STORE, "readonly");
+        const req = tx.objectStore(IDB_STORE).getAllKeys();
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(new LibfwError(`idb keys: ${req.error}`, "idb"));
+      });
+      const matches = keys.filter((key) => String(key).startsWith(prefix));
+      if (matches.length === 0) return 0;
+      await new Promise((resolve, reject) => {
+        const tx = db.transaction(IDB_STORE, "readwrite");
+        const store = tx.objectStore(IDB_STORE);
+        for (const key of matches) store.delete(key);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(new LibfwError(`idb clear direction: ${tx.error}`, "idb"));
+      });
+      return matches.length;
+    },
+    /**
+     * Wipe the whole resume store.
+     * @returns {Promise<void>}
+     */
+    async clear() {
+      const db = await Idb.open();
+      await new Promise((resolve, reject) => {
+        const tx = db.transaction(IDB_STORE, "readwrite");
+        tx.objectStore(IDB_STORE).clear();
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(new LibfwError(`idb clear: ${tx.error}`, "idb"));
+      });
     }
   };
   function splitPath(path) {
     return String(path).split("/").filter((s) => s.length > 0);
   }
+  var BUNDLE_SCRIPT_SRC = typeof document !== "undefined" && document.currentScript && document.currentScript.src ? document.currentScript.src : null;
   var LibfwClient2 = class {
     /**
      * @param {object} [options]
@@ -858,6 +985,20 @@ ${val.stack}`;
      * @param {number} [options.baseRetryDelayMs=500] initial backoff (ms)
      * @param {number} [options.maxRetryDelayMs=30000] backoff ceiling (ms)
      * @param {number} [options.timeoutMs=60000] per-request timeout (ms)
+     * @param {string} [options.wasmUrl] explicit URL of `libfw_client_bg.wasm`;
+     *        when omitted it is resolved automatically for both ESM and
+     *        classic-`<script>`/UMD consumers (see {@link LibfwClient#_wasmUrl})
+     * @param {'auto'|'fs'|'browser'} [options.downloadMode='auto'] how downloads
+     *        reach the user's disk: `'fs'` uses the File System Access API
+     *        (`showDirectoryPicker`); `'browser'` buffers each file and triggers
+     *        a traditional browser download (folders are packed into a `.zip`);
+     *        `'auto'` picks `'fs'` when the API exists, otherwise `'browser'`.
+     * @param {number} [options.maxFallbackBytes=536870912] memory cap (bytes)
+     *        for the in-memory `'browser'` download fallback. Each file's size
+     *        (and the cumulative buffered total) is pre-checked against it
+     *        before any bytes are buffered; a download that would exceed it is
+     *        rejected with a `too-large` error instead of risking an OOM.
+     *        `0` disables the limit.
      * @param {(event: {type: string, done: number, total: number, path?: string, error?: string}) => void} [options.onEvent]
      *        optional progress/state listener
      */
@@ -871,6 +1012,9 @@ ${val.stack}`;
         baseRetryDelayMs: 500,
         maxRetryDelayMs: 3e4,
         timeoutMs: 6e4,
+        wasmUrl: null,
+        downloadMode: "auto",
+        maxFallbackBytes: 512 * 1024 * 1024,
         onEvent: null,
         ...options
       };
@@ -879,10 +1023,9 @@ ${val.stack}`;
       this._dirHandle = null;
       this._fileHandles = /* @__PURE__ */ new Map();
       this._writables = /* @__PURE__ */ new Map();
-      this._writeBuffers = /* @__PURE__ */ new Map();
-      this._finalizing = /* @__PURE__ */ new Map();
       this._uploadFiles = /* @__PURE__ */ new Map();
       this._uploadPlan = [];
+      this._fallback = null;
     }
     // ------------------------------------------------------------------ setup
     /**
@@ -893,7 +1036,7 @@ ${val.stack}`;
     async _ready() {
       if (this._engine) return this._engine;
       if (!this._initPromise) {
-        this._initPromise = __wbg_init().catch((err) => {
+        this._initPromise = __wbg_init({ module_or_path: this._wasmUrl() }).catch((err) => {
           this._initPromise = null;
           throw toLibfwError(err);
         });
@@ -913,18 +1056,62 @@ ${val.stack}`;
       return engine;
     }
     /**
+     * Resolve the `.wasm` file URL without relying on `import.meta` (which is
+     * ESM-only and a parse error in a classic `<script>`).
+     *
+     * Order: explicit `wasmUrl` option → classic-script `document.currentScript`
+     * → ESM `import.meta.url`. The `wasmUrl` option is the escape hatch for
+     * deployments where neither auto-detection applies.
+     * @returns {string|URL}
+     * @private
+     */
+    _wasmUrl() {
+      if (this._options.wasmUrl) return this._options.wasmUrl;
+      if (BUNDLE_SCRIPT_SRC) {
+        return new URL("libfw_client_bg.wasm", BUNDLE_SCRIPT_SRC);
+      }
+      if (typeof import_meta2 !== "undefined" && import_meta2.url) {
+        return new URL("./pkg/libfw_client_bg.wasm", import_meta2.url);
+      }
+      return "libfw_client_bg.wasm";
+    }
+    /**
      * Build the callbacks object handed to the WASM engine.
      * @returns {object}
      * @private
      */
     _makeCallbacks() {
       return {
-        onFileStart: (path, size) => this._emit({ type: "fileStart", path, done: 0, total: size }),
+        onFileStart: (path, size) => {
+          if (this._fallback) {
+            this._fallback.sizes.set(path, size);
+            const max = this._maxFallbackBytes();
+            if (max > 0) {
+              if (size > max) {
+                throw new LibfwError(
+                  `file too large for browser download (${size} > ${max} bytes): ${path}`,
+                  "too-large"
+                );
+              }
+              this._fallback.total += size;
+              if (this._fallback.total > max) {
+                throw new LibfwError(
+                  `browser download would buffer more than the ${max}-byte in-memory limit`,
+                  "too-large"
+                );
+              }
+            }
+          }
+          this._emit({ type: "fileStart", path, done: 0, total: size });
+        },
         onWriteChunk: (path, offset, data) => this._onWriteChunk(path, offset, data),
         onFileCompleted: (path) => this._onFileCompleted(path),
         onProgress: (done, total) => this._emit({ type: "progress", done, total }),
         loadState: (direction, path) => Idb.loadState(`${direction}:${path}`),
-        saveState: (direction, path, state) => Idb.saveState(`${direction}:${path}`, state),
+        saveState: (direction, path, state) => {
+          if (direction === "download" && this._fallback) return Promise.resolve();
+          return Idb.saveState(`${direction}:${path}`, state);
+        },
         getFileList: () => this._getFileList(),
         readFile: (path, offset, length) => this._readFile(path, offset, length),
         log: (msg) => {
@@ -941,23 +1128,46 @@ ${val.stack}`;
         }
       }
     }
+    /**
+     * Whether the File System Access API is available in this browser.
+     * @returns {boolean}
+     * @private
+     */
+    _supportsFsAccess() {
+      return typeof window !== "undefined" && typeof window.showDirectoryPicker === "function" && typeof FileSystemFileHandle !== "undefined" && typeof FileSystemDirectoryHandle !== "undefined";
+    }
+    /**
+     * Resolve the effective download mode from the `downloadMode` option:
+     * an explicit `'fs'`/`'browser'` wins; `'auto'` falls back to the browser
+     * download when the File System Access API is missing.
+     * @returns {'fs'|'browser'}
+     * @private
+     */
+    _effectiveMode() {
+      const mode = this._options.downloadMode || "auto";
+      if (mode === "fs" || mode === "browser") return mode;
+      return this._supportsFsAccess() ? "fs" : "browser";
+    }
     // ------------------------------------------------------------ downloads
     /**
-     * Download a whole folder from the server into a local directory chosen
-     * by the user via `showDirectoryPicker()`.
+     * Download a whole folder from the server.
      *
-     * Folder structure (including nested directories) is preserved; bytes
-     * are streamed to disk through `createWritable({ type: 'write' })`.
+     * With the File System Access API available the folder is streamed into a
+     * user-selected local directory (`showDirectoryPicker`), preserving the
+     * structure through one `createWritable()` per file. Without FS API (or
+     * with `downloadMode: 'browser'`) the folder is buffered in memory, packed
+     * into a `.zip` and saved via a traditional browser download — no manual
+     * feature detection needed by the caller.
      *
      * @param {string} token bearer token
      * @param {string} [dirPath=''] virtual server path to download (root by default)
-     * @returns {Promise<number>} total bytes written
+     * @returns {Promise<number>} total bytes transferred
      * @throws {LibfwError}
      */
     async downloadFolder(token, dirPath = "") {
       const engine = await this._ready();
-      if (typeof window === "undefined" || typeof window.showDirectoryPicker !== "function") {
-        throw new LibfwError("File System Access API is not available in this browser", "unsupported");
+      if (this._effectiveMode() === "browser") {
+        return this._downloadViaBrowser(engine, token, dirPath, true);
       }
       this._dirHandle = await window.showDirectoryPicker();
       this._fileHandles.clear();
@@ -967,23 +1177,28 @@ ${val.stack}`;
         throw toLibfwError(err);
       } finally {
         await this._flushWritables();
+        await this._syncResumeOffsets();
       }
     }
     /**
-     * Download a single file from the server at `filePath` into a local
-     * directory chosen via `showDirectoryPicker()`.
+     * Download a single file from the server at `filePath`.
+     *
+     * With the File System Access API available the file is streamed into the
+     * directory chosen via `showDirectoryPicker()`. Without FS API (or with
+     * `downloadMode: 'browser'`) the file is buffered and saved through a
+     * traditional browser download.
      *
      * @param {string} token bearer token
      * @param {string} filePath virtual server path of the file to download
-     * @returns {Promise<number>} total bytes written
+     * @returns {Promise<number>} total bytes transferred
      * @throws {LibfwError}
      */
     async downloadFile(token, filePath) {
       const engine = await this._ready();
-      if (typeof window === "undefined" || typeof window.showDirectoryPicker !== "function") {
-        throw new LibfwError("File System Access API is not available in this browser", "unsupported");
-      }
       if (!filePath) throw new LibfwError("downloadFile requires a file path", "path");
+      if (this._effectiveMode() === "browser") {
+        return this._downloadViaBrowser(engine, token, filePath, false);
+      }
       this._dirHandle = await window.showDirectoryPicker();
       this._fileHandles.clear();
       try {
@@ -992,96 +1207,219 @@ ${val.stack}`;
         throw toLibfwError(err);
       } finally {
         await this._flushWritables();
+        await this._syncResumeOffsets();
       }
     }
     /**
-     * Stream a decompressed chunk straight to disk at its absolute byte
-     * offset, keeping memory bounded regardless of file size (no whole-file
-     * buffering). The engine awaits this callback, so writes for a file are
-     * applied strictly in order.
+     * Buffer-chunk fallback download used when the File System Access API is
+     * unavailable (or `downloadMode: 'browser'`).
+     *
+     * `onWriteChunk` chunks are collected per path in memory (the engine keeps
+     * calling them in order). When the transfer finishes: a single file is
+     * emitted as a `Blob` and saved via a normal browser download; a folder is
+     * packed into a `.zip` (STORE method) and downloaded. Progress/state events
+     * keep flowing as usual. Note this buffers the whole transfer in memory —
+     * the cost of not having FS API to stream to disk.
+     *
+     * @param {WasmEngine} engine
+     * @param {string} token
      * @param {string} path virtual path
-     * @param {number} offset byte offset
+     * @param {boolean} isFolder
+     * @returns {Promise<number>} total bytes transferred
+     * @private
+     */
+    async _downloadViaBrowser(engine, token, path, isFolder) {
+      this._fallback = { isFolder, buffers: /* @__PURE__ */ new Map(), order: [], sizes: /* @__PURE__ */ new Map(), total: 0 };
+      try {
+        const total = isFolder ? await engine.download_folder(this._options.baseUrl, token, path) : await engine.download_file(this._options.baseUrl, token, path);
+        const { buffers, order, sizes } = this._fallback;
+        if (isFolder) {
+          const entries = [];
+          for (const p of order) {
+            entries.push({
+              name: this._safeEntryName(p),
+              data: this._concatBuffers(buffers.get(p) || [])
+            });
+          }
+          for (const p of sizes.keys()) {
+            if (!buffers.has(p)) {
+              entries.push({ name: this._safeEntryName(p), data: new Uint8Array(0) });
+            }
+          }
+          this._triggerBrowserDownload(createZip(entries), this._archiveName(path));
+        } else {
+          const data = this._concatBuffers(buffers.get(path) || []);
+          this._triggerBrowserDownload(new Blob([data], { type: "application/octet-stream" }), this._downloadName(path));
+        }
+        return total;
+      } catch (err) {
+        throw toLibfwError(err);
+      } finally {
+        this._fallback = null;
+      }
+    }
+    /**
+     * Concatenate buffered chunks into one `Uint8Array`.
+     * @param {Uint8Array[]} bufs
+     * @returns {Uint8Array}
+     * @private
+     */
+    _concatBuffers(bufs) {
+      if (bufs.length === 0) return new Uint8Array(0);
+      if (bufs.length === 1) return bufs[0];
+      const len = bufs.reduce((n, b) => n + b.length, 0);
+      const out = new Uint8Array(len);
+      let off = 0;
+      for (const b of bufs) {
+        out.set(b, off);
+        off += b.length;
+      }
+      return out;
+    }
+    /**
+     * Strip a leading `/` so an entry path is archive/OS friendly.
+     * @param {string} path
+     * @returns {string}
+     * @private
+     */
+    _cleanPath(path) {
+      return String(path).replace(/^\/+/, "");
+    }
+    /**
+     * Validate a virtual path for use as a ZIP entry name, rejecting any
+     * traversal (`..`), absolute/drive-letter prefixes or Windows-style
+     * separators that could escape the archive on extraction (zip-slip).
+     * @param {string} path
+     * @returns {string}
+     * @private
+     */
+    _safeEntryName(path) {
+      const cleaned = this._cleanPath(path);
+      const segs = String(cleaned).split("/");
+      if (segs.some((seg) => seg === ".." || seg.includes("\\") || /^[a-zA-Z]:/.test(seg))) {
+        throw new LibfwError(`unsafe path in download: ${path}`, "path");
+      }
+      return cleaned;
+    }
+    /**
+     * The configured in-memory cap for the browser-download fallback.
+     * @returns {number} 0 disables the limit.
+     * @private
+     */
+    _maxFallbackBytes() {
+      const max = Number(this._options.maxFallbackBytes);
+      return Number.isFinite(max) && max > 0 ? max : 0;
+    }
+    /**
+     * Derive a safe file name from a virtual path.
+     * @param {string} path
+     * @returns {string}
+     * @private
+     */
+    _downloadName(path) {
+      const name = this._cleanPath(path).split("/").pop();
+      return name || "download";
+    }
+    /**
+     * Derive the `.zip` archive name for a folder download.
+     * @param {string} path
+     * @returns {string}
+     * @private
+     */
+    _archiveName(path) {
+      const base = this._cleanPath(path).split("/").pop() || "download";
+      return `${base.replace(/[^\w.\- ]+/g, "_") || "download"}.zip`;
+    }
+    /**
+     * Trigger a traditional browser download via a temporary `<a download>`.
+     * @param {Blob} blob
+     * @param {string} filename
+     * @returns {void}
+     * @private
+     */
+    _triggerBrowserDownload(blob, filename) {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 6e4);
+    }
+    /**
+     * Stream a decompressed chunk to disk, keeping memory bounded regardless
+     * of file size (no whole-file buffering).
+     *
+     * The destination writable is opened exactly once per file and written in
+     * **append mode** (`writable.write(data)` without an explicit `position`).
+     * The engine awaits this callback, so chunks for a file arrive strictly in
+     * order, making append writes correct for both fresh and resumed
+     * downloads. Crucially, this avoids per-write
+     * `{ type: 'write', position }` calls, which in Chromium can spawn a fresh
+     * `.crswap` swap file per write and leave the target file empty on close —
+     * the single `createWritable()` + sequential writes + one `close()` below
+     * commits the swap file atomically.
+     * @param {string} path virtual path
+     * @param {number} offset byte offset (informational; writes append)
      * @param {Uint8Array} data decompressed chunk
      * @returns {Promise<void>}
      * @private
      */
     async _onWriteChunk(path, offset, data) {
-      // Buffer the chunk; the file is committed in one write on completion.
-      // (Incremental `write({type:'write', position})` calls spawn a new
-      // `.crswap` temp per write in Chromium and never commit the target, so
-      // we avoid them and write the whole file once.)
-      let arr = this._writeBuffers.get(path);
-      if (!arr) {
-        arr = [];
-        this._writeBuffers.set(path, arr);
-      }
-      arr.push(data);
-    }
-    /**
-     * Close the destination writable once a file's transfer completes.
-     * @param {string} path virtual path
-     * @returns {Promise<void>}
-     * @private
-     */
-    /**
-     * Write one file's buffered chunks to disk with a single plain
-     * `createWritable()` + `write()` + `close()`.
-     * @param {string} path virtual path
-     * @returns {Promise<void>}
-     * @private
-     */
-    async _finalizeFile(path) {
-      if (this._finalizing.has(path)) return this._finalizing.get(path);
-      const p = (async () => {
-        const chunks = this._writeBuffers.get(path);
-        if (!chunks || chunks.length === 0) return;
-        this._writeBuffers.delete(path);
-        const handle = await this._ensureFileHandle(path);
-        const writable = await handle.createWritable();
-        try {
-          await writable.write(new Blob(chunks));
-          await writable.close();
-        } catch (e) {
-          try {
-            await writable.abort();
-          } catch (_) {
-          }
-          throw e;
+      if (this._fallback) {
+        let bufs = this._fallback.buffers.get(path);
+        if (!bufs) {
+          bufs = [];
+          this._fallback.buffers.set(path, bufs);
+          this._fallback.order.push(path);
         }
-      })().finally(() => {
-        this._finalizing.delete(path);
-      });
-      this._finalizing.set(path, p);
-      return p;
+        bufs.push(data);
+        return;
+      }
+      let entry = this._writables.get(path);
+      if (!entry) {
+        const { dir, name, handle } = await this._ensureFileHandle(path);
+        this._fileHandles.set(path, handle);
+        const isResume = offset > 0;
+        if (!isResume) {
+          await this._removeSwapFile(dir, name);
+        }
+        const writable = await handle.createWritable(
+          isResume ? { keepExistingData: true } : void 0
+        );
+        entry = { writable, dir, name };
+        this._writables.set(path, entry);
+      }
+      await entry.writable.write(data);
     }
     /**
      * Close the destination writable once a file's transfer completes.
-     *
-     * Commits the buffered bytes to disk (single full write) before
-     * reporting the file done, and returns a promise that never rejects so
-     * the 0.1.2 engine's awaited `onFileCompleted` always resolves.
      * @param {string} path virtual path
      * @returns {Promise<void>}
      * @private
      */
     async _onFileCompleted(path) {
-      const p = this._finalizeFile(path);
+      if (this._fallback) {
+        this._emit({ type: "fileCompleted", path });
+        return;
+      }
+      await this._closeWritable(path);
       this._emit({ type: "fileCompleted", path });
-      await p.catch(() => {
-      });
     }
     /**
-     * Close (and forget) a file's writable, flushing buffered bytes to disk.
+     * Close (and forget) a file's writable, atomically committing the swap
+     * file to its final name. Best-effort so failure/abort never throws.
      * @param {string} path virtual path
      * @returns {Promise<void>}
      * @private
      */
     async _closeWritable(path) {
-      const writable = this._writables.get(path);
-      if (writable) {
+      const entry = this._writables.get(path);
+      if (entry) {
         this._writables.delete(path);
         try {
-          await writable.close();
+          await entry.writable.close();
         } catch {
         }
       }
@@ -1090,7 +1428,7 @@ ${val.stack}`;
      * Resolve (and create, if needed) the file handle for a virtual path,
      * creating any parent directories along the way.
      * @param {string} path
-     * @returns {Promise<FileSystemFileHandle>}
+     * @returns {Promise<{dir: FileSystemDirectoryHandle, name: string, handle: FileSystemFileHandle}>}
      * @private
      */
     async _ensureFileHandle(path) {
@@ -1102,7 +1440,23 @@ ${val.stack}`;
       for (let i = 0; i < segments.length - 1; i += 1) {
         dir = await dir.getDirectoryHandle(segments[i], { create: true });
       }
-      return dir.getFileHandle(segments[segments.length - 1], { create: true });
+      const name = segments[segments.length - 1];
+      const handle = await dir.getFileHandle(name, { create: true });
+      return { dir, name, handle };
+    }
+    /**
+     * Delete a leftover Chromium swap file (`.<name>.crswap`) next to a file,
+     * ignoring any error (no swap file, or permission denied).
+     * @param {FileSystemDirectoryHandle} dir parent directory
+     * @param {string} name target file name
+     * @returns {Promise<void>}
+     * @private
+     */
+    async _removeSwapFile(dir, name) {
+      try {
+        await dir.removeEntry(`.${name}.crswap`, { recursive: false });
+      } catch {
+      }
     }
     /**
      * Close all still-open writable streams (flush to disk). Called on
@@ -1111,21 +1465,40 @@ ${val.stack}`;
      * @private
      */
     async _flushWritables() {
-      // Finalize any files that never got a `fileCompleted` (e.g. on error) so
-      // partial data is flushed instead of lingering as `.crswap` files.
-      for (const path of [...this._writeBuffers.keys()]) {
+      const pending = [...this._writables.entries()].map(async ([path, entry]) => {
+        this._writables.delete(path);
         try {
-          await this._finalizeFile(path);
-        } catch (e) {
+          await entry.writable.close();
+        } catch {
+        }
+      });
+      await Promise.allSettled(pending);
+    }
+    /**
+     * Reconcile persisted download resume offsets with the bytes actually
+     * committed to disk.
+     *
+     * `createWritable()` only commits to the real file on `close()`, so an
+     * interrupted download's on-disk length can be ahead of (or behind) the
+     * engine's periodically-saved offset. Overwriting each file's stored
+     * offset with its real size keeps the append-based resume consistent:
+     * the next transfer resumes exactly where the file on disk ends.
+     * @returns {Promise<void>}
+     * @private
+     */
+    async _syncResumeOffsets() {
+      for (const [path, handle] of this._fileHandles) {
+        try {
+          const file = await handle.getFile();
+          const size = file.size;
+          const state = await Idb.loadState(`download:${path}`);
+          if (state && typeof state.etag === "string") {
+            await Idb.saveState(`download:${path}`, { ...state, offset: size, size });
+          }
+        } catch {
         }
       }
-      // Wait for every in-flight finalization to finish committing.
-      await Promise.allSettled([...this._finalizing.values()]);
-      // Legacy writables (defensive; nothing should open them now).
-      const pending = [...this._writables.values()].map((w) => w.close().catch(() => {
-      }));
-      this._writables.clear();
-      await Promise.allSettled(pending);
+      this._fileHandles.clear();
     }
     // -------------------------------------------------------------- uploads
     /**
@@ -1275,6 +1648,34 @@ ${val.stack}`;
      */
     totalBytes() {
       return this._engine ? this._engine.total_bytes() : 0;
+    }
+    // ------------------------------------------------------------- resume store
+    /**
+     * Delete persisted resume state (IndexedDB).
+     *
+     * Pass a direction to wipe only that transfer's state, leaving the other
+     * direction intact — the targeted replacement for clearing the whole store
+     * before every transfer:
+     *
+     * - `await client.clearResumeStore('download')` — drop all download state.
+     * - `await client.clearResumeStore('upload')` — drop all upload state.
+     * - `await client.clearResumeStore()` — wipe everything (whole-store clear).
+     *
+     * @param {'upload'|'download'} [direction] restrict to one direction
+     * @returns {Promise<number>} number of records removed
+     */
+    async clearResumeStore(direction) {
+      if (direction !== void 0 && direction !== "upload" && direction !== "download") {
+        throw new LibfwError(
+          `clearResumeStore: expected 'upload' | 'download' | undefined, got ${JSON.stringify(direction)}`,
+          "path"
+        );
+      }
+      if (direction === void 0) {
+        await Idb.clear();
+        return 0;
+      }
+      return Idb.clearDirection(direction);
     }
   };
   var libfw_client_default = LibfwClient2;

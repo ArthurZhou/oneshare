@@ -13,6 +13,6 @@
     "vite-plugin-html-minifier-terser": "^3.8.0"
   },
   "dependencies": {
-    "libfw-client": "0.1.2"
+    "libfw-client": "0.1.3"
   }
 }
