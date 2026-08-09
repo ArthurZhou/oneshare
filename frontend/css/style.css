@@ -241,6 +241,11 @@ a:hover {
   border-bottom: 1px solid var(--border);
   cursor: default;
   transition: background 0.1s;
+  /* Touch: prevent iOS long-press text-selection callout and text highlight
+     while the long-press → context-menu gesture is active. */
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 .file-row:hover {
@@ -358,6 +363,8 @@ a:hover {
   font-size: 13px;
   font-weight: 700;
   text-transform: uppercase;
+  /* Touch: no double-tap zoom delay / viewport-scaled taps on menu items. */
+  touch-action: manipulation;
 }
 
 .ctx-item:hover {

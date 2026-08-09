@@ -157,22 +157,32 @@ function renderFiles(data) {
     });
   });
 
-  // Wire up context menu
+  // Wire up context menu: right-click on desktop, long-press on touch.
   el.querySelectorAll('.file-row').forEach(row => {
     if (row.classList.contains('header')) return;
     row.addEventListener('contextmenu', (e) => {
       e.preventDefault();
-      selectedFile = { path: row.dataset.path, name: row.dataset.name, isDir: row.dataset.isDir === 'true' };
-      showContextMenu(e.clientX, e.clientY, selectedFile);
+      openContextMenuAt(e.clientX, e.clientY, row);
     });
+    attachLongPress(row, (x, y) => openContextMenuAt(x, y, row));
   });
+}
+
+function openContextMenuAt(x, y, row) {
+  selectedFile = { path: row.dataset.path, name: row.dataset.name, isDir: row.dataset.isDir === 'true' };
+  showContextMenu(x, y, selectedFile);
 }
 
 function showContextMenu(x, y, file) {
   const menu = document.getElementById('ctx-menu');
   menu.style.display = 'block';
-  menu.style.left = x + 'px';
-  menu.style.top = y + 'px';
+  // Keep the menu inside the viewport — important on touch, where the finger
+  // is usually near the bottom/edge of the screen.
+  const r = menu.getBoundingClientRect();
+  const px = Math.min(x, Math.max(0, window.innerWidth - r.width - 8));
+  const py = Math.min(y, Math.max(0, window.innerHeight - r.height - 8));
+  menu.style.left = px + 'px';
+  menu.style.top = py + 'px';
 
   // Download is available for both files and folders (folders download as ZIP)
   menu.querySelectorAll('.ctx-item').forEach(item => {
@@ -186,6 +196,74 @@ function showContextMenu(x, y, file) {
 function hideContextMenu() {
   document.getElementById('ctx-menu').style.display = 'none';
 }
+
+// ── Touch long-press → context menu ──
+// Touchscreens have no right-click, so holding a file/folder row for
+// ~LONG_PRESS_MS (without scrolling) opens the context menu, exactly like a
+// right click on desktop. The synthetic `click` that a long-press produces is
+// suppressed so it can't navigate the row (dir rows) or immediately dismiss
+// the menu.
+const LONG_PRESS_MS = 500;
+const LONG_PRESS_MOVE_TOLERANCE = 10; // px of finger travel that cancels
+// Clicks on a ROW are swallowed for this long after a long-press, so the
+// browser's synthetic click (fired right after the finger lifts) can't
+// navigate the row or dismiss the just-opened menu. Clicks on the context
+// menu itself are never affected, so a tap on a menu item always works even
+// if the browser happened not to emit the synthetic row click.
+let suppressRowClicksUntil = 0;
+
+function attachLongPress(el, onLongPress) {
+  let timer = null;
+  let startX = 0;
+  let startY = 0;
+
+  const clear = () => {
+    if (timer) { clearTimeout(timer); timer = null; }
+  };
+
+  el.addEventListener('touchstart', (e) => {
+    // Don't hijack taps on the row's action buttons (they have their own
+    // click handlers and are meant to be tapped, not long-pressed).
+    if (e.target.closest('[data-action]')) return;
+    const t = e.touches[0];
+    if (!t) return;
+    startX = t.clientX;
+    startY = t.clientY;
+    clear();
+    timer = setTimeout(() => {
+      timer = null;
+      suppressRowClicksUntil = Date.now() + 800;
+      if (navigator.vibrate) { try { navigator.vibrate(15); } catch (err) { /* noop */ } }
+      onLongPress(startX, startY);
+    }, LONG_PRESS_MS);
+  }, { passive: true });
+
+  // Scrolling / dragging cancels the long-press.
+  el.addEventListener('touchmove', (e) => {
+    const t = e.touches[0];
+    if (!t) return;
+    if (Math.abs(t.clientX - startX) > LONG_PRESS_MOVE_TOLERANCE ||
+        Math.abs(t.clientY - startY) > LONG_PRESS_MOVE_TOLERANCE) {
+      clear();
+    }
+  }, { passive: true });
+
+  el.addEventListener('touchend', clear);
+  el.addEventListener('touchcancel', clear);
+}
+
+// Capture-phase: right after a long-press, suppress the synthetic click when
+// it lands on a row, so it doesn't navigate the row (`.file-row.dir` click
+// handler) or close the menu (app.js's global click-to-dismiss runs in the
+// bubble phase). Clicks elsewhere (context-menu items, toolbar, empty space)
+// pass through untouched.
+document.addEventListener('click', (e) => {
+  if (Date.now() < suppressRowClicksUntil && e.target.closest('.file-row')) {
+    suppressRowClicksUntil = 0;
+    e.preventDefault();
+    e.stopPropagation();
+  }
+}, true);
 
 async function handleContextAction(action, file) {
   switch (action) {
