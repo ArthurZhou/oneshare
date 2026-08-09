@@ -9,7 +9,7 @@
 // `esbuild.transform` compiles each file in isolation, so top-level
 // const/function declarations stay top-level (i.e. globals) — no module
 // wrapper, no `export {}`.
-import { transform } from 'esbuild';
+import { build as esbuildBuild, transform } from 'esbuild';
 import { copyFile, readdir, readFile, mkdir, writeFile } from 'node:fs/promises';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -37,12 +37,36 @@ for (const f of files) {
   console.log(`minified js/${f}: ${code.length} -> ${min.length} bytes`);
 }
 
-// Copy the vendored libfw SDK (UMD bundle) and its WASM engine verbatim.
-// They are classic-script / binary assets that Vite does not touch, and the
-// release build embeds them from ../static via include_str!/include_bytes!.
-const vendorSrc = join(root, 'vendor');
+// Build the vendored libfw SDK (a `window.LibfwClient` classic-script/IIFE
+// bundle) directly from the installed npm package with esbuild, then copy the
+// WASM engine beside it. The npm package ships ESM sources + a raw WASM
+// binary but no prebuilt classic-script bundle, so we build it here instead
+// of maintaining a hand-committed vendor copy (which drifts from the version
+// actually installed). The bundle is written to BOTH ../static/vendor
+// (embedded by release builds via include_str!/include_bytes!) and ./vendor
+// (served from disk by debug builds), so both modes always run a bundle that
+// matches the installed libfw-client.
+const sdkRoot = join(root, 'node_modules', 'libfw-client');
 const vendorOut = join(root, '..', 'static', 'vendor');
+const devVendorOut = join(root, 'vendor');
 await mkdir(vendorOut, { recursive: true });
-await copyFile(join(vendorSrc, 'libfw-client.js'), join(vendorOut, 'libfw-client.js'));
-await copyFile(join(vendorSrc, 'libfw_client_bg.wasm'), join(vendorOut, 'libfw_client_bg.wasm'));
-console.log('copied vendor/libfw-client.js + vendor/libfw_client_bg.wasm');
+await mkdir(devVendorOut, { recursive: true });
+
+await esbuildBuild({
+  entryPoints: [join(sdkRoot, 'index.js')],
+  bundle: true,
+  format: 'iife',
+  globalName: 'LibfwClient',
+  platform: 'browser',
+  minify: true,
+  // The wasm-bindgen glue only falls back to `import.meta.url` in ESM; in
+  // classic-script mode the SDK resolves the sibling `.wasm` from
+  // `document.currentScript.src`, so `import.meta` here is dead code.
+  define: { 'import.meta.url': '{}' },
+  outfile: join(vendorOut, 'libfw-client.js'),
+  logLevel: 'info',
+});
+await copyFile(join(vendorOut, 'libfw-client.js'), join(devVendorOut, 'libfw-client.js'));
+await copyFile(join(sdkRoot, 'pkg', 'libfw_client_bg.wasm'), join(vendorOut, 'libfw_client_bg.wasm'));
+await copyFile(join(sdkRoot, 'pkg', 'libfw_client_bg.wasm'), join(devVendorOut, 'libfw_client_bg.wasm'));
+console.log('built vendor/libfw-client.js + libfw_client_bg.wasm from node_modules/libfw-client');

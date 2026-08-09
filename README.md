@@ -30,15 +30,22 @@ cp config.example.toml config.toml
 ### 2. Build and run
 
 The frontend is vanilla JS in `frontend/`. Debug builds serve it straight from
-disk (no build step); release builds minify it with Vite and embed the result
-into the binary.
+disk; release builds minify it with Vite and embed the result into the binary.
+`pnpm build` also generates `frontend/vendor/` (the libfw WASM SDK, bundled
+from the installed `libfw-client` npm package) that debug builds serve, so run
+it once after `pnpm install` before either mode.
 
 ```bash
-# Debug — serves ./frontend from disk, no frontend build needed
+# One-time frontend build (minifies JS/CSS into ../static AND generates
+# frontend/vendor/ — the bundled libfw SDK served from disk in debug)
+cd frontend && pnpm install && pnpm build
+cd ..
+
+# Debug — serves ./frontend from disk (needs the vendor/ generated above)
 cargo run
 
 # Release — Vite minifies the frontend into ../static, which is embedded
-cd frontend && pnpm install && pnpm build
+cd frontend && pnpm build
 cd ..
 cargo run --release
 ```
