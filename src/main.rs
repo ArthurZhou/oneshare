@@ -172,12 +172,36 @@ where
                     Ok(uid) => uid,
                     Err(_) => return Box::pin(self.inner.call(req)),
                 };
-                let Some(user) = self.state.db.get_user_by_id(uid).ok().flatten() else {
-                    return Box::pin(self.inner.call(req));
-                };
-                let Some(groups) = self.state.db.get_effective_groups(uid).ok() else {
-                    return Box::pin(self.inner.call(req));
-                };
+                // Resolve the token's subject to (user, effective groups). A
+                // guest token (sub = GUEST_USER_ID, issued for unauthenticated
+                // sessions) maps to the synthetic guest user, whose permissions
+                // come from the reserved `guest` group — the exact same identity
+                // `/api/files/token` used when it issued the token.
+                let guest_user = crate::auth::session::guest_user();
+                let guest_groups = self
+                    .state
+                    .db
+                    .get_guest_group_id()
+                    .ok()
+                    .flatten()
+                    .map(|id| vec![id])
+                    .unwrap_or_default();
+                let (user, groups) =
+                    match self.state.db.get_user_by_id(uid).ok().flatten() {
+                        Some(u) => {
+                            let groups = self
+                                .state
+                                .db
+                                .get_effective_groups(u.id)
+                                .ok()
+                                .unwrap_or_default();
+                            (u, groups)
+                        }
+                        None if uid == crate::auth::session::GUEST_USER_ID => {
+                            (guest_user, guest_groups)
+                        }
+                        None => return Box::pin(self.inner.call(req)),
+                    };
                 let Some(entries) = self.state.db.list_acl_entries().ok() else {
                     return Box::pin(self.inner.call(req));
                 };

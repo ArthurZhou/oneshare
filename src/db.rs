@@ -75,11 +75,24 @@ impl Database {
             [],
         )?;
 
+        // Seed the reserved "guest" group: it defines the permissions of
+        // unauthenticated (not logged in) visitors, so an admin can grant
+        // public read access with a single ACL.
+        conn.execute(
+            "INSERT OR IGNORE INTO groups_ (name, description)
+             VALUES ('guest', 'Fallback group: applies to unauthenticated (not logged in) visitors')",
+            [],
+        )?;
+
         Ok(())
     }
 
     /// The reserved group name that holds permissions for unassigned users.
     pub const DEFAULT_GROUP_NAME: &'static str = "default";
+
+    /// The reserved group name that holds permissions for unauthenticated
+    /// (not logged in) visitors.
+    pub const GUEST_GROUP_NAME: &'static str = "guest";
 
     /// ID of the reserved `default` group, if it exists.
     pub fn get_default_group_id(&self) -> Result<Option<i64>, rusqlite::Error> {
@@ -87,6 +100,21 @@ impl Database {
         let id = conn.query_row(
             "SELECT id FROM groups_ WHERE name = ?1",
             params![Self::DEFAULT_GROUP_NAME],
+            |r| r.get(0),
+        );
+        match id {
+            Ok(id) => Ok(Some(id)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// ID of the reserved `guest` group, if it exists.
+    pub fn get_guest_group_id(&self) -> Result<Option<i64>, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let id = conn.query_row(
+            "SELECT id FROM groups_ WHERE name = ?1",
+            params![Self::GUEST_GROUP_NAME],
             |r| r.get(0),
         );
         match id {

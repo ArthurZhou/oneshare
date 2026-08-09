@@ -1,5 +1,5 @@
 use crate::acl::{self, Permission};
-use crate::auth::session::get_user_from_cookie;
+use crate::auth::session::get_request_user;
 use crate::db::{AclEntryRow, UserRow};
 use crate::libtoken::issue_token;
 use crate::models::*;
@@ -113,9 +113,11 @@ pub async fn list(
     jar: CookieJar,
     Query(query): Query<ListQuery>,
 ) -> Result<Json<DirListing>, StatusCode> {
-    let user = get_user_from_cookie(&jar, &state.db)
-        .await?
-        .ok_or(StatusCode::UNAUTHORIZED)?;
+    // Unauthenticated requests are treated as the synthetic guest user, whose
+    // permissions come from the reserved `guest` group (no 401 redirect).
+    let ru = get_request_user(&jar, &state.db).await?;
+    let user = &ru.user;
+    let user_groups = &ru.groups;
 
     let requested = query.path.unwrap_or_else(|| "".to_string());
     let requested = requested.trim_start_matches('/').to_string();
@@ -125,10 +127,6 @@ pub async fn list(
     let acl_entries = state
         .db
         .list_acl_entries()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let user_groups = state
-        .db
-        .get_effective_groups(user.id)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     let root = state.config.root_dir().clone();
@@ -251,11 +249,9 @@ pub async fn delete(
     jar: CookieJar,
     Json(body): Json<FileOperation>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    let user = get_user_from_cookie(&jar, &state.db)
-        .await?
-        .ok_or(StatusCode::UNAUTHORIZED)?;
+    let ru = get_request_user(&jar, &state.db).await?;
 
-    let real = resolve_checked(&state, &user, &body.path, Permission::Write).await?;
+    let real = resolve_checked(&state, &ru.user, &ru.groups, &body.path, Permission::Write).await?;
     let full_path = state.config.root_dir().join(&real);
     if !full_path.exists() {
         return Err(StatusCode::NOT_FOUND);
@@ -281,11 +277,9 @@ pub async fn rename(
     jar: CookieJar,
     Json(body): Json<RenameRequest>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    let user = get_user_from_cookie(&jar, &state.db)
-        .await?
-        .ok_or(StatusCode::UNAUTHORIZED)?;
+    let ru = get_request_user(&jar, &state.db).await?;
 
-    let real = resolve_checked(&state, &user, &body.path, Permission::Write).await?;
+    let real = resolve_checked(&state, &ru.user, &ru.groups, &body.path, Permission::Write).await?;
     let old_full = state.config.root_dir().join(&real);
     if !old_full.exists() {
         return Err(StatusCode::NOT_FOUND);
@@ -326,12 +320,10 @@ pub async fn mv(
     jar: CookieJar,
     Json(body): Json<MoveRequest>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    let user = get_user_from_cookie(&jar, &state.db)
-        .await?
-        .ok_or(StatusCode::UNAUTHORIZED)?;
+    let ru = get_request_user(&jar, &state.db).await?;
 
-    let src_real = resolve_checked(&state, &user, &body.source, Permission::Write).await?;
-    let dst_real = resolve_checked(&state, &user, &body.destination, Permission::Write).await?;
+    let src_real = resolve_checked(&state, &ru.user, &ru.groups, &body.source, Permission::Write).await?;
+    let dst_real = resolve_checked(&state, &ru.user, &ru.groups, &body.destination, Permission::Write).await?;
 
     let src_full = state.config.root_dir().join(&src_real);
     let dst_full = state.config.root_dir().join(&dst_real);
@@ -365,9 +357,7 @@ pub async fn mkdir(
     jar: CookieJar,
     Json(body): Json<MkdirRequest>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    let user = get_user_from_cookie(&jar, &state.db)
-        .await?
-        .ok_or(StatusCode::UNAUTHORIZED)?;
+    let ru = get_request_user(&jar, &state.db).await?;
 
     if body.name.is_empty()
         || body.name.contains('/')
@@ -383,7 +373,7 @@ pub async fn mkdir(
     // Admin: path is real. Non-admin: path is the virtual parent directory
     // (e.g. `public2` → real `nested/public2`); the new folder is created
     // inside the resolved real parent.
-    let real = resolve_checked(&state, &user, &body.path, Permission::Write).await?;
+    let real = resolve_checked(&state, &ru.user, &ru.groups, &body.path, Permission::Write).await?;
     let base = if real.is_empty() {
         state.config.root_dir().clone()
     } else {
@@ -404,6 +394,7 @@ pub async fn mkdir(
 async fn resolve_checked(
     state: &Arc<AppState>,
     user: &UserRow,
+    user_groups: &[i64],
     path: &str,
     required: Permission,
 ) -> Result<String, StatusCode> {
@@ -411,15 +402,11 @@ async fn resolve_checked(
         .db
         .list_acl_entries()
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let user_groups = state
-        .db
-        .get_effective_groups(user.id)
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    let real = resolve_for_user(user, &user_groups, &acl_entries, path)
+    let real = resolve_for_user(user, user_groups, &acl_entries, path)
         .ok_or(StatusCode::FORBIDDEN)?;
 
-    acl::can_access(user, &user_groups, &acl_entries, &real, &required)
+    acl::can_access(user, user_groups, &acl_entries, &real, &required)
         .then_some(real)
         .ok_or(StatusCode::FORBIDDEN)
 }
@@ -442,14 +429,14 @@ pub async fn get_token(
     jar: CookieJar,
     Query(query): Query<TokenQuery>,
 ) -> Result<Json<TokenResponse>, StatusCode> {
-    let user = get_user_from_cookie(&jar, &state.db)
-        .await?
-        .ok_or(StatusCode::UNAUTHORIZED)?;
+    // Guests (unauthenticated) can get read tokens for anything the `guest`
+    // group can read, which is what powers downloads without a session.
+    let ru = get_request_user(&jar, &state.db).await?;
 
     // The token is bound to the REAL path. The frontend only ever supplies a
     // virtual path (non-admin), which we resolve here — the real path travels
     // inside the opaque signed token, never in an API response.
-    let real_path = resolve_checked(&state, &user, &query.path, {
+    let real_path = resolve_checked(&state, &ru.user, &ru.groups, &query.path, {
         match query.op.as_str() {
             "write" => Permission::Write,
             _ => Permission::Read,
@@ -467,7 +454,7 @@ pub async fn get_token(
 
     let token = issue_token(
         &state.hmac_key,
-        &user.id.to_string(),
+        &ru.user.id.to_string(),
         &real_path,
         permissions,
         ttl_secs,

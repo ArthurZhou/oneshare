@@ -131,6 +131,17 @@ permissions to all unassigned users with a single ACL (e.g. `/public → default
 (read)`), and it cannot be deleted. Users with explicit group memberships use
 exactly those groups and do *not* inherit `default`.
 
+### The `guest` group
+
+Every **unauthenticated** visitor (not logged in) is treated as a member of
+the reserved **`guest`** group. It lets admins grant public read access with a
+single ACL (e.g. `/public → guest (read)`), and it cannot be deleted. Guests
+are *not* admins and never see the admin UI. The frontend no longer redirects
+to the login page for logged-out visitors — they simply browse whatever the
+`guest` group grants (a login link stays available in the header). The `guest`
+group is separate from `default`: `default` covers logged-in users without
+explicit groups, `guest` covers visitors with no session at all.
+
 ### Samba-style web root
 
 The browser root (`/`) is a virtual share root, like Samba: it lists every

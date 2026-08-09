@@ -11,10 +11,12 @@ const API = {
   async fetch(url, opts = {}) {
     const res = await fetch(this.base + url, { ...opts, credentials: 'same-origin' });
     if (!res.ok) {
+      // No auto-redirect to the login page: unauthenticated visitors are
+      // treated as guests with `guest`-group permissions, so the file APIs no
+      // longer return 401 for them. A 401 here means a session is genuinely
+      // invalid/expired — surface the error instead of bouncing the user.
       if (res.status === 401) {
-        // Redirect to login (respecting the configured URL prefix)
-        window.location.href = `${this.base}/auth/login`;
-        throw new Error('Unauthorized');
+        throw new Error('Not signed in');
       }
       if (res.status === 403) {
         throw new Error('Permission denied');

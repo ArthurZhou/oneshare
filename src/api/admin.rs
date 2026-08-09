@@ -55,14 +55,17 @@ pub async fn delete_group(
     if user.is_admin != 1 {
         return Err(StatusCode::FORBIDDEN);
     }
-    // The reserved `default` group cannot be deleted: it is what grants
-    // permissions to users not assigned to any explicit group.
+    // The reserved `default` and `guest` groups cannot be deleted: they are
+    // what grant permissions to users not assigned to any explicit group and
+    // to unauthenticated visitors respectively.
     let group = state
         .db
         .get_group_by_id(group_id)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     if let Some(g) = group {
-        if g.name == crate::db::Database::DEFAULT_GROUP_NAME {
+        if g.name == crate::db::Database::DEFAULT_GROUP_NAME
+            || g.name == crate::db::Database::GUEST_GROUP_NAME
+        {
             return Err(StatusCode::BAD_REQUEST);
         }
     }

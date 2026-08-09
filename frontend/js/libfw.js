@@ -273,8 +273,151 @@
       });
     },
 
-    // Cancel the active transfer (SDK engine).
+    // Download a single file as a Blob over the libfw `/file/{path}` endpoint
+    // with the read token. This is the traditional-download path used by
+    // browsers WITHOUT the File System Access API (no `showDirectoryPicker`),
+    // where the SDK's `downloadFile`/`downloadFolder` cannot save files. XHR
+    // (not fetch) gives us download progress and an abort handle for the
+    // transfers panel. `path` is the display (virtual) path — the server
+    // resolves it and libfw serves identity bytes.
+    fetchBlob(path, token, onEvent) {
+      return this._enqueue(() => new Promise((resolve, reject) => {
+        // Per-segment encode so `/` stays a separator (matches the API client).
+        const enc = String(path).split('/').map(encodeURIComponent).join('/');
+        const xhr = new XMLHttpRequest();
+        xhr.open('GET', `${base}/file/${enc}`, true);
+        xhr.responseType = 'blob';
+        xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+        xhr.onprogress = (e) => {
+          if (e.lengthComputable && typeof onEvent === 'function') {
+            onEvent({ type: 'progress', done: e.loaded, total: e.total });
+          }
+        };
+        xhr.onload = () => {
+          if (this._activeXhr === xhr) this._activeXhr = null;
+          if (xhr.status >= 200 && xhr.status < 300) resolve(xhr.response);
+          else reject(new Error(`Download failed (HTTP ${xhr.status})`));
+        };
+        xhr.onerror = () => {
+          if (this._activeXhr === xhr) this._activeXhr = null;
+          reject(new Error('Network error during download'));
+        };
+        xhr.onabort = () => {
+          if (this._activeXhr === xhr) this._activeXhr = null;
+          const err = new Error('Download cancelled');
+          err.code = 'cancelled';
+          reject(err);
+        };
+        this._activeXhr = xhr;
+        xhr.send();
+      }));
+    },
+
+    // Minimal ZIP writer (STORE / no compression) used by the folder-download
+    // fallback for browsers without the File System Access API. `entries` is
+    // an Array of `{ path, blob }` (`path` = entry name inside the archive).
+    // Pure client-side, no dependencies. NOTE: the archive is assembled in
+    // browser memory (≈ total folder size + overhead), so this is best suited
+    // to small/medium folders; very large folders should prefer a server-side
+    // zip endpoint.
+    async buildZip(entries) {
+      const enc = new TextEncoder();
+      // CRC-32 table (standard polynomial 0xEDB88320).
+      const crcTable = (() => {
+        const t = new Uint32Array(256);
+        for (let n = 0; n < 256; n++) {
+          let c = n;
+          for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+          t[n] = c >>> 0;
+        }
+        return t;
+      })();
+      const crc32 = (data) => {
+        let c = 0xffffffff;
+        for (let i = 0; i < data.length; i++) c = crcTable[(c ^ data[i]) & 0xff] ^ (c >>> 8);
+        return (c ^ 0xffffffff) >>> 0;
+      };
+      const dosDateTime = () => {
+        const d = new Date();
+        const time = (d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1);
+        const date = ((d.getFullYear() - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate();
+        return { time, date };
+      };
+
+      const body = [];
+      const central = [];
+      let offset = 0;
+
+      for (const entry of entries) {
+        const name = String(entry.path);
+        const nameBytes = enc.encode(name);
+        const data = entry.blob
+          ? new Uint8Array(await entry.blob.arrayBuffer())
+          : new Uint8Array(0);
+        const crc = crc32(data);
+        const { time, date } = dosDateTime();
+
+        // Local file header (signature, version, flags, method, dos time/date,
+        // crc, sizes, name len, extra len, name).
+        const lfh = new Uint8Array(30);
+        const dv = new DataView(lfh.buffer);
+        dv.setUint32(0, 0x04034b50, true);
+        dv.setUint16(4, 20, true);
+        dv.setUint16(6, 0x0800, true);   // general purpose bit 11 = UTF-8 names
+        dv.setUint16(8, 0, true);        // method 0 = STORE
+        dv.setUint16(10, time, true);
+        dv.setUint16(12, date, true);
+        dv.setUint32(14, crc, true);
+        dv.setUint32(18, data.length, true); // compressed size
+        dv.setUint32(22, data.length, true); // uncompressed size
+        dv.setUint16(26, nameBytes.length, true);
+        dv.setUint16(28, 0, true);
+        body.push(lfh, nameBytes, data);
+
+        // Central directory record.
+        const cd = new Uint8Array(46);
+        const cv = new DataView(cd.buffer);
+        cv.setUint32(0, 0x02014b50, true);
+        cv.setUint16(4, 20, true);        // version made by
+        cv.setUint16(6, 20, true);        // version needed
+        cv.setUint16(8, 0x0800, true);
+        cv.setUint16(10, 0, true);        // method 0 = STORE
+        cv.setUint16(12, time, true);
+        cv.setUint16(14, date, true);
+        cv.setUint32(16, crc, true);
+        cv.setUint32(20, data.length, true);
+        cv.setUint32(24, data.length, true);
+        cv.setUint16(28, nameBytes.length, true);
+        cv.setUint16(30, 0, true);        // extra len
+        cv.setUint16(32, 0, true);        // comment len
+        cv.setUint16(34, 0, true);        // disk number start
+        cv.setUint16(36, 0, true);        // internal attrs
+        cv.setUint32(38, 0, true);        // external attrs
+        cv.setUint32(42, offset, true);   // local header offset
+        central.push(cd, nameBytes);
+
+        offset += 30 + nameBytes.length + data.length;
+      }
+
+      // End of central directory record.
+      const centralSize = central.reduce((s, c) => s + c.length, 0);
+      const eocd = new Uint8Array(22);
+      const ev = new DataView(eocd.buffer);
+      ev.setUint32(0, 0x06054b50, true);
+      ev.setUint16(4, 0, true);
+      ev.setUint16(6, 0, true);
+      ev.setUint16(8, entries.length, true);
+      ev.setUint16(10, entries.length, true);
+      ev.setUint32(12, centralSize, true);
+      ev.setUint32(16, offset, true);
+      ev.setUint16(20, 0, true);
+
+      return new Blob([...body, ...central, eocd], { type: 'application/zip' });
+    },
+
+    // Cancel the active transfer (SDK engine or in-flight fallback XHR).
     cancel() {
+      if (this._activeXhr) { try { this._activeXhr.abort(); } catch (e) { /* noop */ } }
       if (this._client) { try { this._client.cancel(); } catch (e) { /* noop */ } }
     },
     pause() { if (this._client) { try { this._client.pause(); } catch (e) { /* noop */ } } },

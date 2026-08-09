@@ -367,21 +367,17 @@ async function runUploadTask(t, destPath, token, items) {
   }
 }
 
-// ── Downloads (via libfw SDK) ──
+// ── Downloads (via libfw SDK / traditional fallback) ──
 //
-// Folder downloads use the libfw-client SDK's `downloadFolder` (File System
-// Access API → the user picks the destination directory, structure is
-// preserved, bytes stream through createWritable). Since libfw-client 0.1.2
-// the SDK also has `downloadFile` for single files, so those go through the
-// SDK too — the user picks a destination directory and the file is saved
-// under its own name.
+// Browsers with the File System Access API (`showDirectoryPicker`) download
+// through the libfw-client SDK (`downloadFile` / `downloadFolder`), which
+// streams straight into a user-picked directory. Browsers WITHOUT it fall
+// back to the classic model: single files are fetched to a Blob and triggered
+// as a normal browser download; folders are enumerated, every file is fetched
+// to a Blob, packed into a ZIP in the browser, then the ZIP is downloaded.
 
 function downloadFile(path, name) {
   (async () => {
-    if (!window.showDirectoryPicker) {
-      alert('File download requires a Chromium-based browser (File System Access API)');
-      return;
-    }
     const tokenResp = await API.getToken(path, 'read');
     const t = { kind: 'download', name, total: 0, done: 0, status: 'active', error: null };
     addTransfer(t);
@@ -396,10 +392,22 @@ async function runFileDownloadTask(t, path, name, token) {
   t.error = null;
   renderTransfers();
   try {
-    const bytes = await Libfw.downloadFile(token, path, (ev) => {
+    const progress = (ev) => {
       if (ev.type === 'progress') updateTransfer(t.id, { done: ev.done, total: ev.total });
-    });
-    updateTransfer(t.id, { status: 'done', done: bytes });
+    };
+    let done = 0;
+    if (window.showDirectoryPicker) {
+      // File System Access API: the user picks a directory, the SDK streams
+      // the file into it.
+      done = await Libfw.downloadFile(token, path, progress);
+    } else {
+      // No FSAPI: download to a Blob, then trigger a traditional browser
+      // download ("Save As" handling is up to the browser).
+      const blob = await Libfw.fetchBlob(path, token, progress);
+      done = blob.size;
+      saveBlob(blob, name);
+    }
+    updateTransfer(t.id, { status: 'done', done });
     setTimeout(() => removeTransfer(t.id), 3000);
   } catch (e) {
     const cancelled = e && (e.code === 'cancelled' || e.code === 'abort' || e.name === 'AbortError');
@@ -412,10 +420,6 @@ async function runFileDownloadTask(t, path, name, token) {
 
 function downloadFolder(path, name) {
   (async () => {
-    if (!window.showDirectoryPicker) {
-      alert('Folder download requires a Chromium-based browser (File System Access API)');
-      return;
-    }
     const tokenResp = await API.getToken(path, 'read');
     const t = { kind: 'download', name, total: 0, done: 0, status: 'active', error: null };
     addTransfer(t);
@@ -430,10 +434,34 @@ async function runFolderDownloadTask(t, path, name, token) {
   t.error = null;
   renderTransfers();
   try {
-    const bytes = await Libfw.downloadFolder(token, path, (ev) => {
-      if (ev.type === 'progress') updateTransfer(t.id, { done: ev.done, total: ev.total });
-    });
-    updateTransfer(t.id, { status: 'done', done: bytes });
+    if (window.showDirectoryPicker) {
+      // File System Access API: the user picks a directory, the SDK streams
+      // the whole tree into it.
+      const bytes = await Libfw.downloadFolder(token, path, (ev) => {
+        if (ev.type === 'progress') updateTransfer(t.id, { done: ev.done, total: ev.total });
+      });
+      updateTransfer(t.id, { status: 'done', done: bytes });
+    } else {
+      // No FSAPI: enumerate the folder, download every file to a Blob, pack
+      // them into a ZIP in the browser, then trigger a normal download. The
+      // whole folder is held in memory while zipping (see Libfw.buildZip).
+      const files = await collectFolderFiles(path);
+      if (!files.length) throw new Error('Folder is empty');
+      const total = files.reduce((s, f) => s + f.size, 0);
+      let done = 0;
+      const entries = [];
+      for (const f of files) {
+        const blob = await Libfw.fetchBlob(f.path, token, (ev) => {
+          if (ev.type === 'progress') updateTransfer(t.id, { done: done + ev.done, total });
+        });
+        done += blob.size;
+        entries.push({ path: f.rel, blob });
+        updateTransfer(t.id, { done, total });
+      }
+      const zip = await Libfw.buildZip(entries);
+      saveBlob(zip, (name || 'folder') + '.zip');
+      updateTransfer(t.id, { status: 'done', done: total });
+    }
     setTimeout(() => removeTransfer(t.id), 3000);
   } catch (e) {
     const cancelled = e && (e.code === 'cancelled' || e.code === 'abort' || e.name === 'AbortError');
@@ -442,6 +470,39 @@ async function runFolderDownloadTask(t, path, name, token) {
       error: cancelled ? '' : (e && e.message) || String(e),
     });
   }
+}
+
+// Enumerate every file under `dirPath` (display paths) via /api/files/list,
+// returning `[{ rel, path, size }]` where `rel` is the path relative to the
+// folder (used as the ZIP entry name) and `path` is the display path used to
+// fetch each file with the folder's read token.
+async function collectFolderFiles(dirPath) {
+  const out = [];
+  const walk = async (dir, prefix) => {
+    const data = await API.listFiles(dir);
+    for (const e of data.entries) {
+      const rel = prefix ? prefix + '/' + e.name : e.name;
+      if (e.is_dir) {
+        await walk(e.path, rel);
+      } else {
+        out.push({ rel, path: e.path, size: e.size });
+      }
+    }
+  };
+  await walk(dirPath, '');
+  return out;
+}
+
+// Trigger a classic browser download for an in-memory Blob.
+function saveBlob(blob, name) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
 }
 
 function showRenameModal(file) {
@@ -674,6 +735,7 @@ function escapeHtml(str) {
   return div.innerHTML;
 }
 
-// Folder downloads now use the libfw SDK (File System Access API) and single
-// file downloads are handled by libfw.js, so the client-side ZIP packer and
-// blob-trigger helpers were removed.
+// Downloads: browsers with the File System Access API go through the libfw
+// SDK (`downloadFile`/`downloadFolder` in libfw.js); browsers without it fall
+// back to the classic Blob → anchor-download path, with folders packed into a
+// ZIP client-side (Libfw.buildZip).
