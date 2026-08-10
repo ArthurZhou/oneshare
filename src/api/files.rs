@@ -434,8 +434,11 @@ pub async fn get_token(
     let ru = get_request_user(&jar, &state.db).await?;
 
     // The token is bound to the REAL path. The frontend only ever supplies a
-    // virtual path (non-admin), which we resolve here — the real path travels
-    // inside the opaque signed token, never in an API response.
+    // virtual path (non-admin), which we resolve here. Since libfw 0.2.0 moves
+    // transfers onto WebSocket (where the SDK sends the path it is given),
+    // we also hand the resolved real path back so the client can drive the
+    // WebSocket transfer against it. Admin/root-ACL users' display path IS the
+    // real path, so `real_path` equals what they sent.
     let real_path = resolve_checked(&state, &ru.user, &ru.groups, &query.path, {
         match query.op.as_str() {
             "write" => Permission::Write,
@@ -463,5 +466,6 @@ pub async fn get_token(
     Ok(Json(TokenResponse {
         token,
         expires_in: ttl_secs,
+        real_path,
     }))
 }

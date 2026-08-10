@@ -401,10 +401,14 @@ async function handleUpload(input) {
   }
 
   // One write token for the destination; the server binds it to the real
-  // directory path, and the SDK uploads virtual child paths underneath it.
-  let token;
+  // directory path, and the SDK uploads real child paths underneath it.
+  // libfw 0.2.0 drives transfers over WebSocket, where the SDK sends the path
+  // it is given — so we hand it the REAL destination path from the token.
+  let token, realDest;
   try {
-    token = (await API.getToken(destPath || '/', 'write')).token;
+    const resp = await API.getToken(destPath || '/', 'write');
+    token = resp.token;
+    realDest = resp.real_path;
   } catch (e) {
     alert('Upload denied: ' + e.message);
     return;
@@ -422,7 +426,7 @@ async function handleUpload(input) {
   };
   addTransfer(t);
   t.cancel = () => Libfw.cancel();
-  t.run = () => runUploadTask(t, destPath, token, items);
+  t.run = () => runUploadTask(t, realDest, token, items);
   t.run();
 }
 
@@ -460,12 +464,12 @@ function downloadFile(path, name) {
     const t = { kind: 'download', name, total: 0, done: 0, status: 'active', error: null };
     addTransfer(t);
     t.cancel = () => Libfw.cancel();
-    t.run = () => runFileDownloadTask(t, path, name, tokenResp.token);
+    t.run = () => runFileDownloadTask(t, path, name, tokenResp.token, tokenResp.real_path);
     t.run();
   })().catch(e => alert('Download denied: ' + e.message));
 }
 
-async function runFileDownloadTask(t, path, name, token) {
+async function runFileDownloadTask(t, path, name, token, realPath) {
   t.status = 'active';
   t.error = null;
   renderTransfers();
@@ -473,9 +477,10 @@ async function runFileDownloadTask(t, path, name, token) {
     const progress = (ev) => {
       if (ev.type === 'progress') updateTransfer(t.id, { done: ev.done, total: ev.total });
     };
-    // libfw-client 0.1.3 saves the file itself: streamed into a user-picked
-    // directory (FS API) or via a traditional browser download.
-    const done = await Libfw.downloadFile(token, path, progress);
+    // libfw-client 0.2.0 saves the file itself (streamed into a user-picked
+    // directory via FS API, or via a traditional browser download). The SDK
+    // sends the path we give it over WebSocket, so pass the REAL path.
+    const done = await Libfw.downloadFile(token, realPath, progress);
     updateTransfer(t.id, { status: 'done', done });
     setTimeout(() => removeTransfer(t.id), 3000);
   } catch (e) {
@@ -493,20 +498,21 @@ function downloadFolder(path, name) {
     const t = { kind: 'download', name, total: 0, done: 0, status: 'active', error: null };
     addTransfer(t);
     t.cancel = () => Libfw.cancel();
-    t.run = () => runFolderDownloadTask(t, path, name, tokenResp.token);
+    t.run = () => runFolderDownloadTask(t, path, name, tokenResp.token, tokenResp.real_path);
     t.run();
   })().catch(e => alert('Download denied: ' + e.message));
 }
 
-async function runFolderDownloadTask(t, path, name, token) {
+async function runFolderDownloadTask(t, path, name, token, realPath) {
   t.status = 'active';
   t.error = null;
   renderTransfers();
   try {
-    // libfw-client 0.1.3 downloads the whole tree itself: streamed into a
-    // user-picked directory (FS API) or packed into a `.zip` and saved via a
-    // normal browser download (`downloadMode: 'auto'`).
-    const bytes = await Libfw.downloadFolder(token, path, (ev) => {
+    // libfw-client 0.2.0 downloads the whole tree itself over WebSocket
+    // (streamed into a user-picked directory via FS API, or packed into a
+    // `.zip` and saved via a normal browser download). It sends the path we
+    // give it, so pass the REAL root path of the folder.
+    const bytes = await Libfw.downloadFolder(token, realPath, (ev) => {
       if (ev.type === 'progress') updateTransfer(t.id, { done: ev.done, total: ev.total });
     });
     updateTransfer(t.id, { status: 'done', done: bytes });

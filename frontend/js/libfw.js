@@ -7,12 +7,17 @@
 //   - `window.ONESHARE_LIBFW` — SDK options from `[libfw]` in config.toml,
 //     served by the backend's `/config.js`.
 //
-// Since libfw-client 0.1.3 the SDK handles both download paths itself:
+// Since libfw-client 0.2.0 the SDK performs every transfer over a WebSocket
+// (`/ws`) using a block-transfer protocol, and handles both download save
+// paths itself:
 //   - File System Access API (`showDirectoryPicker`) when available — the
 //     download streams into a user-picked directory.
 //   - a native in-browser fallback (`downloadMode: 'auto'`) when it is not —
 //     single files are saved via a normal browser download, folders are
 //     packed into a `.zip` and downloaded.
+// The SDK sends the (real) paths it is given; the wrapper below is handed the
+// REAL paths from the `/api/files/token` response (`real_path`) so tokens
+// (bound to those real paths) and the WebSocket transfers stay consistent.
 // No hand-rolled fetch/XHR/ZIP code remains in the client.
 (function () {
   'use strict';
@@ -115,6 +120,11 @@
       if (!this._client && LibfwClientClass) {
         this._client = new OneshareLibfwClient({
           baseUrl: base,
+          // libfw 0.2.0 derives the WebSocket endpoint from the server ORIGIN
+          // (`ws(s)://host/ws`), which ignores the app's URL prefix. When
+          // served under a prefix we must set the explicit path so the SDK
+          // connects to `/oneshare/ws` (root serving → `/ws`).
+          wsUrl: (base || '') + '/ws',
           concurrency: opts.concurrency,
           compress: opts.compress,
           chunkSize: opts.chunkSize,

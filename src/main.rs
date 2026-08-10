@@ -578,7 +578,14 @@ async fn main() {
     // rewrites non-admin virtual paths (/file/public2/... → /file/nested/public2/...)
     // so real paths never leave the server; admin paths pass through.
     let file_service = VirtualTranslate::new(FreshPathParams::new(libfw_app.clone()), state.clone());
-    let dir_service = VirtualTranslate::new(FreshPathParams::new(libfw_app), state.clone());
+    let dir_service = VirtualTranslate::new(FreshPathParams::new(libfw_app.clone()), state.clone());
+    // libfw 0.2.0 moves ALL browser transfers (upload + download) onto the
+    // `/ws` WebSocket endpoint (a block-transfer protocol). The SDK connects
+    // with the bearer token and sends the REAL paths that token is bound to,
+    // so no virtual-path translation applies here — pass libfw's ws handler
+    // through untouched. The `/ws` route has no `{*path}` capture, so it needs
+    // no FreshPathParams either.
+    let ws_service = libfw_app;
 
     let mut app = Router::new()
         .route("/auth/login", get(api::auth::login))
@@ -607,6 +614,7 @@ async fn main() {
         .route("/config.js", get(api::config_js))
         .route("/file/{*path}", any_service(file_service))
         .route("/dir/{*path}", any_service(dir_service))
+        .route("/ws", any_service(ws_service))
         // Frontend fallback: debug builds serve the loose ./frontend directory
         // (with revalidation so browsers never cache stale JS/CSS during dev);
         // release builds serve the minified assets embedded by build.rs. See
