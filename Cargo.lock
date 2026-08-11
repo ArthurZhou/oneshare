@@ -1324,9 +1324,9 @@ checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
 
 [[package]]
 name = "libfw-core"
-version = "0.2.0"
+version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f5570ab100d6d27b3188f6f99f7cb6abe7a980460bd38ad2468b6e20bf1b68f6"
+checksum = "2fba9506b676344670424508dd4baa1feed6f286a490a19ec49ffbfd87e7dfc8"
 dependencies = [
  "async-trait",
  "crc32fast",
@@ -1339,9 +1339,9 @@ dependencies = [
 
 [[package]]
 name = "libfw-server"
-version = "0.2.0"
+version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6c8c903b31883a6629010720ea83dd7239cf53ff0251f78483b5638fce70326c"
+checksum = "1bc8937c05af756dd8e97a3aadb7d3cf0ed9f59ded4bef6b0a9606cea6f93e77"
 dependencies = [
  "async-trait",
  "axum",
@@ -1534,7 +1534,7 @@ checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 
 [[package]]
 name = "oneshare"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "axum",
  "axum-extra",
