@@ -15,6 +15,9 @@ data/
 # Configuration with secrets
 config.toml
 
+# Local test environment (offline OIDC + seeded DB, see repo notes)
+.test-env/
+
 # IDE / editor
 .idea/
 .vscode/

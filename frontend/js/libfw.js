@@ -32,7 +32,10 @@
     maxRetries: typeof served.maxRetries === 'number' ? served.maxRetries : 3,
     baseRetryDelayMs: typeof served.baseRetryDelayMs === 'number' ? served.baseRetryDelayMs : 500,
     maxRetryDelayMs: typeof served.maxRetryDelayMs === 'number' ? served.maxRetryDelayMs : 30000,
-    timeoutMs: typeof served.timeoutMs === 'number' ? served.timeoutMs : 60000,
+    // The libfw engine applies timeoutMs as a PER-READ timeout on the WS and
+    // aborts the whole transfer if any single read stalls longer than it.
+    // Keep the fallback generous (10 min) so it never kills active transfers.
+    timeoutMs: typeof served.timeoutMs === 'number' ? served.timeoutMs : 600000,
   };
 
   // ── SDK classes (the UMD bundle exports them on window.LibfwClient) ──

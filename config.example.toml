@@ -39,4 +39,10 @@ chunk_size = 2097152
 max_retries = 3
 base_retry_delay_ms = 500
 max_retry_delay_ms = 30000
-timeout_ms = 60000
+# WebSocket per-read (idle) timeout in ms. The libfw engine aborts the whole
+# transfer if ANY single frame read stalls longer than this — it is not a
+# total-transfer deadline. Keep it generous (default 600000 = 10 min) so a
+# slow link / large upload / high-latency wave never kills a healthy
+# transfer; 0 disables the JS timer (browser socket errors still detect a
+# dead peer).
+timeout_ms = 600000

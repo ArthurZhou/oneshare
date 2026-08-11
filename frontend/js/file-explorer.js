@@ -317,7 +317,15 @@ function transferStatusLabel(t) {
 }
 
 function transferPct(t) {
-  if (t.total > 0) return Math.min(100, Math.round(((t.done || 0) / t.total) * 100));
+  if (t.total > 0) {
+    const pct = Math.min(100, Math.round(((t.done || 0) / t.total) * 100));
+    // The libfw engine reports upload progress as bytes DISPATCHED into the
+    // WebSocket (not bytes the server has confirmed), so it can hit 100%
+    // before the transfer is actually complete. Never claim 100% while a
+    // transfer is still active — only the post-completion path (status
+    // 'done') shows 100%.
+    return t.status === 'active' ? Math.min(99, pct) : pct;
+  }
   return 0;
 }
 
