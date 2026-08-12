@@ -33,17 +33,18 @@ async function renderAclPanel() {
   let rows = '';
   acl.forEach(entry => {
     const target = entry.user_name || entry.group_name || '?';
-    const icon = entry.user_id ? '👤' : '👥';
+    const icon = entry.user_id ? iconSvg('user') : iconSvg('users');
     rows += `<div class="admin-acl-row">
-      <div>📂 ${escapeHtml(entry.path)} &nbsp; ${icon} ${escapeHtml(target)} &nbsp; <span class="perm">${entry.permission}</span></div>
-      <button class="btn btn-sm btn-danger" data-remove-acl="${entry.id}">×</button>
+      <div>${iconSvg('folder')} ${escapeHtml(entry.path)} &nbsp; ${icon} ${escapeHtml(target)} &nbsp; <span class="perm">${entry.permission}</span></div>
+      <button class="btn btn-sm btn-danger" data-remove-acl="${entry.id}">${iconSvg('x')}</button>
     </div>`;
   });
 
-  const userOpts = users.map(u => `<option value="user:${u.id}">👤 ${escapeHtml(u.display_name)}</option>`).join('');
+  // SVG doesn't render inside <option> labels, so these pickers use plain text.
+  const userOpts = users.map(u => `<option value="user:${u.id}">${escapeHtml(u.display_name)}</option>`).join('');
   // The reserved `default` group controls permissions for users not assigned
   // to any explicit group; label it clearly in the ACL picker.
-  const groupOpts = groups.map(g => `<option value="group:${g.id}">👥 ${escapeHtml(g.name)}${g.name === 'default' ? ' (all unassigned users)' : ''}</option>`).join('');
+  const groupOpts = groups.map(g => `<option value="group:${g.id}">${escapeHtml(g.name)}${g.name === 'default' ? ' (all unassigned users)' : ''}</option>`).join('');
 
   return `
     <div class="admin-acl-add">
@@ -104,7 +105,7 @@ async function renderGroupsPanel() {
     const isReserved = isDefault || isGuest;
     rows += `<div class="admin-group-row">
       <div>
-        <strong>👥 ${escapeHtml(g.name)}</strong>
+        <strong>${iconSvg('users')} ${escapeHtml(g.name)}</strong>
         ${isDefault ? '<span class="admin-tag">default</span>' : ''}
         ${isGuest ? '<span class="admin-tag">guest</span>' : ''}
         <span class="member-count">${count} member${count === 1 ? '' : 's'}</span>
@@ -113,8 +114,8 @@ async function renderGroupsPanel() {
         ${isGuest ? '<span class="group-desc">(grants permissions to unauthenticated visitors)</span>' : ''}
       </div>
       <div>
-        <button class="btn btn-sm" data-manage-group="${g.id}" data-name="${escapeHtml(g.name)}"${isReserved ? ' disabled' : ''}>👤 Manage</button>
-        ${isReserved ? '' : `<button class="btn btn-sm btn-danger" data-delete-group="${g.id}">×</button>`}
+        <button class="btn btn-sm" data-manage-group="${g.id}" data-name="${escapeHtml(g.name)}"${isReserved ? ' disabled' : ''}>${iconSvg('user')} Manage</button>
+        ${isReserved ? '' : `<button class="btn btn-sm btn-danger" data-delete-group="${g.id}">${iconSvg('x')}</button>`}
       </div>
     </div>`;
   });
@@ -171,8 +172,8 @@ async function showGroupManage(groupId, groupName) {
       const isMember = memberIds.has(u.id);
       const btnClass = isMember ? 'btn-danger' : 'btn-primary';
       return `<div class="modal-user-row${isMember ? ' is-member' : ''}">
-        <span>👤 ${escapeHtml(u.display_name)}
-          ${isMember ? '<span class="member-tag">✓ member</span>' : ''}
+        <span>${iconSvg('user')} ${escapeHtml(u.display_name)}
+          ${isMember ? `<span class="member-tag">${iconSvg('check')} member</span>` : ''}
         </span>
         <button class="btn btn-sm ${btnClass}" ${isReserved ? 'disabled' : ''} data-toggle-membership="${u.id}" data-gid="${groupId}" data-member="${isMember}">
           ${isMember ? 'Remove' : '+ Add'}
@@ -181,7 +182,7 @@ async function showGroupManage(groupId, groupName) {
     }).join('');
 
   const reservedNote = isReserved
-    ? `<div class="member-summary" style="color:#b45309">🔒 Membership of the ${escapeHtml(groupName)} group is managed automatically and cannot be changed.</div>`
+    ? `<div class="member-summary" style="color:#b45309">${iconSvg('lock')} Membership of the ${escapeHtml(groupName)} group is managed automatically and cannot be changed.</div>`
     : `<div class="member-summary">${members.length} of ${users.length} users are in this group</div>`;
 
   const html = `${reservedNote}
@@ -218,7 +219,7 @@ async function renderUsersPanel() {
   const users = await API.getUsers();
   let rows = users.map(u => `
     <div class="admin-user-row">
-      <div>👤 <strong>${escapeHtml(u.display_name)}</strong> ${u.email ? `(${escapeHtml(u.email)})` : ''} ${u.is_admin ? '<span class="admin-tag">[admin]</span>' : ''}</div>
+      <div>${iconSvg('user')} <strong>${escapeHtml(u.display_name)}</strong> ${u.email ? `(${escapeHtml(u.email)})` : ''} ${u.is_admin ? '<span class="admin-tag">[admin]</span>' : ''}</div>
       <div style="color:var(--muted);font-size:0.8em">ID: ${u.id}</div>
     </div>
   `).join('');

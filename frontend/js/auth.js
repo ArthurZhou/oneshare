@@ -19,7 +19,7 @@ function updateUserUI() {
   if (!el) return;
   if (currentUser) {
     el.innerHTML = `
-      <span>👤 ${escapeHtml(currentUser.display_name)}</span>
+      <span>${iconSvg('user')} ${escapeHtml(currentUser.display_name)}</span>
       ${currentUser.is_admin ? '<span class="admin-tag">(admin)</span>' : ''}
       <a href="${API.base}/auth/logout" class="btn btn-sm">Logout</a>
     `;

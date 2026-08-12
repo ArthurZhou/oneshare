@@ -1,5 +1,8 @@
 // Main app entry point
 document.addEventListener('DOMContentLoaded', async () => {
+  // Swap static `<i data-feather>` placeholders for inline SVG icons
+  initIcons();
+
   // Check auth first
   await checkAuth();
 

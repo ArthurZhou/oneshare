@@ -9,7 +9,7 @@
 <body>
 <header id="header">
   <div class="header-left">
-    <span class="brand">📁 OneShare</span>
+    <span class="brand"><i data-feather="hard-drive"></i> OneShare</span>
     <nav id="path-nav" class="path-nav"></nav>
   </div>
   <div class="header-right">
@@ -22,13 +22,13 @@
 <main>
   <div id="toolbar" class="toolbar">
     <div class="toolbar-left">
-      <button id="btn-upload" class="btn btn-primary" title="Upload files">⬆ Upload</button>
-      <button id="btn-upload-folder" class="btn" title="Upload a folder (preserves structure)">⬆ Folder</button>
-      <button id="btn-mkdir" class="btn" title="New folder">📂 New Folder</button>
+      <button id="btn-upload" class="btn btn-primary" title="Upload files"><i data-feather="upload"></i> Upload</button>
+      <button id="btn-upload-folder" class="btn" title="Upload a folder (preserves structure)"><i data-feather="folder-plus"></i> Folder</button>
+      <button id="btn-mkdir" class="btn" title="New folder"><i data-feather="folder"></i> New Folder</button>
     </div>
     <div class="toolbar-right">
-      <button id="btn-refresh" class="btn" title="Refresh">🔄</button>
-      <button id="btn-admin" class="btn btn-admin" title="Admin panel" style="display:none">⚙ Admin</button>
+      <button id="btn-refresh" class="btn" title="Refresh"><i data-feather="refresh-cw"></i></button>
+      <button id="btn-admin" class="btn btn-admin" title="Admin panel" style="display:none"><i data-feather="settings"></i> Admin</button>
     </div>
   </div>
 
@@ -43,10 +43,10 @@
 
 <!-- Context Menu -->
 <div id="ctx-menu" class="ctx-menu" style="display:none">
-  <div class="ctx-item" data-action="download">⬇ Download</div>
-  <div class="ctx-item" data-action="rename">✏ Rename</div>
-  <div class="ctx-item" data-action="move">📦 Move</div>
-  <div class="ctx-item ctx-danger" data-action="delete">🗑 Delete</div>
+  <div class="ctx-item" data-action="download"><i data-feather="download"></i> Download</div>
+  <div class="ctx-item" data-action="rename"><i data-feather="edit-2"></i> Rename</div>
+  <div class="ctx-item" data-action="move"><i data-feather="corner-up-right"></i> Move</div>
+  <div class="ctx-item ctx-danger" data-action="delete"><i data-feather="trash-2"></i> Delete</div>
 </div>
 
 <!-- Modal -->
@@ -54,7 +54,7 @@
   <div id="modal" class="modal">
     <div class="modal-header">
       <span id="modal-title">Modal</span>
-      <button class="modal-close" id="modal-close">&times;</button>
+      <button class="modal-close" id="modal-close"><i data-feather="x"></i></button>
     </div>
     <div id="modal-body"></div>
     <div class="modal-footer">
@@ -67,8 +67,8 @@
 <!-- Transfers: upload/download progress with resume -->
 <div id="transfers-panel" class="transfers-panel" style="display:none">
   <div class="transfers-header">
-    <span>⇅ Transfers</span>
-    <button id="transfers-clear" class="btn btn-sm" title="Clear finished tasks">✕</button>
+    <span><i data-feather="activity"></i> Transfers</span>
+    <button id="transfers-clear" class="btn btn-sm" title="Clear finished tasks"><i data-feather="x"></i></button>
   </div>
   <div id="transfers-list" class="transfers-list"></div>
 </div>
@@ -76,8 +76,8 @@
 <!-- Admin Panel -->
 <div id="admin-panel" class="admin-panel" style="display:none">
   <div class="admin-header">
-    <h3>⚙ Administration</h3>
-    <button class="modal-close" id="admin-close">&times;</button>
+    <h3><i data-feather="settings"></i> Administration</h3>
+    <button class="modal-close" id="admin-close"><i data-feather="x"></i></button>
   </div>
   <div class="admin-tabs">
     <button class="admin-tab active" data-tab="acl">ACL</button>
@@ -96,6 +96,8 @@
      so the client can build absolute API/file URLs under the prefix. -->
 <script src="config.js"></script>
 <script src="js/api.js"></script>
+<!-- icons.js: lightweight inline-SVG icons (Feather subset) + initIcons() -->
+<script src="js/icons.js"></script>
 <!-- libfw-client SDK (UMD) + its wrapper: all file transfers go through here -->
 <script src="vendor/libfw-client.js"></script>
 <script src="js/libfw.js"></script>

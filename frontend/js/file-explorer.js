@@ -81,7 +81,7 @@ function updateToolbar() {
 function updatePathNav(data) {
   const nav = document.getElementById('path-nav');
   const parts = data.current_path.split('/').filter(Boolean);
-  let html = '<a href="#" data-path="">📁 Home</a>';
+  let html = '<a href="#" data-path="">' + iconSvg('home') + ' Home</a>';
   if (parts.length > 0) html += '<span class="sep">/</span>';
   let cumulative = '';
   parts.forEach((p, i) => {
@@ -122,7 +122,7 @@ function renderFiles(data) {
     </div>`;
 
   data.entries.forEach(entry => {
-    const icon = entry.is_dir ? '📁' : fileIcon(entry.name);
+    const icon = entry.is_dir ? iconSvg('folder') : fileIcon(entry.name);
     const sizeStr = entry.is_dir ? '' : formatSize(entry.size);
     const cls = entry.is_dir ? 'file-row dir' : 'file-row';
     html += `
@@ -132,7 +132,7 @@ function renderFiles(data) {
         <div class="file-size">${sizeStr}</div>
         <div class="file-mtime">${escapeHtml(entry.modified)}</div>
         <div class="file-actions">
-          <button class="btn btn-sm btn-icon" data-action="download" title="${entry.is_dir ? 'Download folder' : 'Download'}">⬇</button>
+          <button class="btn btn-sm btn-icon" data-action="download" title="${entry.is_dir ? 'Download folder' : 'Download'}">${iconSvg('download')}</button>
         </div>
       </div>`;
   });
@@ -309,9 +309,9 @@ function removeTransfer(id) {
 function transferStatusLabel(t) {
   switch (t.status) {
     case 'active': return '...';
-    case 'done': return '✓ done';
-    case 'error': return '✗ failed';
-    case 'cancelled': return '✕ cancelled';
+    case 'done': return `${iconSvg('check')} done`;
+    case 'error': return `${iconSvg('alert-circle')} failed`;
+    case 'cancelled': return `${iconSvg('x')} cancelled`;
     default: return '';
   }
 }
@@ -343,9 +343,9 @@ function renderTransfers() {
     const done = t.status === 'done';
     const finished = done || t.status === 'error' || t.status === 'cancelled';
     const action = finished
-      ? `<button class="btn btn-sm" data-xfer-remove="${t.id}" title="Remove">✕</button>`
-      : `<button class="btn btn-sm" data-xfer-cancel="${t.id}" title="Cancel">✕</button>`;
-    const arrow = t.kind === 'upload' ? '⬆' : '⬇';
+      ? `<button class="btn btn-sm" data-xfer-remove="${t.id}" title="Remove">${iconSvg('x')}</button>`
+      : `<button class="btn btn-sm" data-xfer-cancel="${t.id}" title="Cancel">${iconSvg('x')}</button>`;
+    const arrow = iconSvg(t.kind === 'upload' ? 'upload' : 'download');
     const sub = t.kind === 'upload'
       ? `Upload · ${formatSize(t.total)}`
       : 'Download';
@@ -746,16 +746,19 @@ function formatSize(bytes) {
 function fileIcon(name) {
   const ext = name.split('.').pop().toLowerCase();
   const icons = {
-    pdf: '📕', doc: '📘', docx: '📘', xls: '📗', xlsx: '📗', ppt: '📙', pptx: '📙',
-    jpg: '🖼', jpeg: '🖼', png: '🖼', gif: '🖼', svg: '🖼', webp: '🖼',
-    mp4: '🎬', avi: '🎬', mkv: '🎬', mov: '🎬',
-    mp3: '🎵', wav: '🎵', flac: '🎵', aac: '🎵',
-    zip: '📦', rar: '📦', tar: '📦', gz: '📦', '7z': '📦',
-    txt: '📄', md: '📄', json: '📄', xml: '📄', yaml: '📄', yml: '📄', toml: '📄',
-    js: '📜', ts: '📜', jsx: '📜', tsx: '📜', py: '📜', rs: '📜', go: '📜', java: '📜', c: '📜', cpp: '📜',
-    html: '🌐', css: '🎨',
+    pdf: 'file-text', doc: 'file-text', docx: 'file-text',
+    xls: 'file-text', xlsx: 'file-text', ppt: 'file-text', pptx: 'file-text',
+    jpg: 'image', jpeg: 'image', png: 'image', gif: 'image', svg: 'image', webp: 'image',
+    mp4: 'film', avi: 'film', mkv: 'film', mov: 'film',
+    mp3: 'music', wav: 'music', flac: 'music', aac: 'music',
+    zip: 'archive', rar: 'archive', tar: 'archive', gz: 'archive', '7z': 'archive',
+    txt: 'file-text', md: 'file-text', json: 'file-text', xml: 'file-text',
+    yaml: 'file-text', yml: 'file-text', toml: 'file-text',
+    js: 'code', ts: 'code', jsx: 'code', tsx: 'code', py: 'code', rs: 'code',
+    go: 'code', java: 'code', c: 'code', cpp: 'code',
+    html: 'globe', css: 'pen-tool',
   };
-  return icons[ext] || '📄';
+  return iconSvg(icons[ext] || 'file');
 }
 
 function escapeHtml(str) {

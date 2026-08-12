@@ -76,6 +76,77 @@ a:hover {
   text-decoration: none;
 }
 
+/* ── Feather icons (inline SVG, inherit currentColor) ── */
+.feather {
+  width: 16px;
+  height: 16px;
+  vertical-align: -3px;
+  flex-shrink: 0;
+}
+
+.brand .feather {
+  width: 20px;
+  height: 20px;
+  vertical-align: -4px;
+}
+
+.btn .feather {
+  width: 14px;
+  height: 14px;
+  vertical-align: -2px;
+}
+
+.btn-icon .feather {
+  width: 14px;
+  height: 14px;
+}
+
+.file-icon .feather {
+  width: 15px;
+  height: 15px;
+}
+
+.path-nav .feather {
+  width: 14px;
+  height: 14px;
+  vertical-align: -2px;
+}
+
+.ctx-item .feather {
+  width: 14px;
+  height: 14px;
+  vertical-align: -2px;
+  margin-right: 6px;
+}
+
+.transfers-header .feather {
+  width: 14px;
+  height: 14px;
+  vertical-align: -2px;
+  margin-right: 4px;
+}
+
+.modal-header .feather,
+.admin-header .feather {
+  width: 16px;
+  height: 16px;
+  vertical-align: -3px;
+}
+
+.modal-close .feather {
+  width: 15px;
+  height: 15px;
+  vertical-align: -2px;
+}
+
+.member-tag .feather,
+.member-summary .feather {
+  width: 13px;
+  height: 13px;
+  vertical-align: -2px;
+  margin-right: 3px;
+}
+
 /* ── Header (secondary-bg 色块, 去掉底部横线) ── */
 #header {
   display: flex;
