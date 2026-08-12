@@ -227,12 +227,14 @@ pub async fn callback(
         }
     };
 
-    // Step 3.5: auto-join a group whose name matches the provider's `role`
-    // claim (if any). This lets an admin pre-create a group named after a
-    // role (e.g. "ops") and have every SSO user carrying that role become a
-    // member automatically. Only matches the user's *current* groups; it
-    // never removes the user from any group.
-    if let Some(role) = &user_info.role {
+    // Step 3.5: auto-join groups whose names match the provider's `role`
+    // claim(s) (if any). The claim may contain multiple roles separated by
+    // commas; each role is matched against existing groups in order. This
+    // lets an admin pre-create groups named after roles (e.g. "ops", "staff")
+    // and have every SSO user carrying those roles become a member
+    // automatically. Only adds the user to groups; it never removes the user
+    // from any group.
+    for role in &user_info.roles {
         match state.db.get_group_by_name(role) {
             Ok(Some(group)) => {
                 if let Err(e) = state.db.add_user_to_group(user.id, group.id) {

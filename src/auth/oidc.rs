@@ -373,12 +373,25 @@ impl OidcClient {
             .unwrap_or_else(|| sub.clone());
         let email = user_data.email.unwrap_or_default();
         // Optional `role` claim (may be a plain string or, e.g., a JSON
-        // array). We keep the raw value and only use it for group matching.
-        let role = user_data.role.map(|r| r.trim().to_string()).filter(|r| !r.is_empty());
+        // array). Multiple roles may be separated by a comma (`,` or the
+        // full-width `，`), with or without surrounding spaces — e.g.
+        // "ops,staff", "ops, staff" or "ops ，staff" all split into
+        // ["ops", "staff"]. Each role is trimmed and matched against
+        // groups sequentially.
+        let roles: Vec<String> = user_data
+            .role
+            .map(|r| {
+                r.split([',', '，'])
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
 
         tracing::debug!(
-            "User info extracted: sub={}, name={}, email={}, role={:?}",
-            sub, name, email, role,
+            "User info extracted: sub={}, name={}, email={}, roles={:?}",
+            sub, name, email, roles,
         );
 
         if sub.is_empty() {
@@ -388,7 +401,7 @@ impl OidcClient {
             ));
         }
 
-        Ok(OidcUserInfo { sub, name, email, role })
+        Ok(OidcUserInfo { sub, name, email, roles })
     }
 }
 
@@ -398,5 +411,6 @@ pub struct OidcUserInfo {
     pub name: String,
     pub email: String,
     /// Optional `role` claim returned by the provider's userinfo endpoint.
-    pub role: Option<String>,
+    /// Multiple roles may be present, separated by commas.
+    pub roles: Vec<String>,
 }
