@@ -1,12 +1,14 @@
-/* ── OneShare UI — static-sample design language ──
+/* ── OneShare UI — sample/zline_sso design language ──
    Monospace / brutalist: CSS tokens, prefers-color-scheme dark mode,
-   thick solid borders, uppercase + weight-900 headings, monochrome accents. */
+   background-contrast panels + inverted-block headings, minimal lines. */
 
-/* ── Design tokens ── */
+/* ── Design tokens (SSO 配色, 同 sample) ── */
 :root {
   --bg: #ffffff;
   --text: #1a1a1a;
-  --border: #1a1a1a;
+  --line: #1a1a1a;
+  --secondary-bg: #f2f2f2;
+  --secondary-text: #666666;
   --input-bg: #f2f2f2;
   --accent: #000000;
   --accent-text: #ffffff;
@@ -23,7 +25,9 @@
   :root {
     --bg: #121212;
     --text: #eeeeee;
-    --border: #444444;
+    --line: #444444;
+    --secondary-bg: #1e1e1e;
+    --secondary-text: #888888;
     --input-bg: #1e1e1e;
     --accent: #eeeeee;
     --accent-text: #121212;
@@ -72,13 +76,13 @@ a:hover {
   text-decoration: none;
 }
 
-/* ── Header ── */
+/* ── Header (secondary-bg 色块, 去掉底部横线) ── */
 #header {
   display: flex;
   justify-content: space-between;
   align-items: center;
   padding: 14px 20px;
-  border-bottom: 4px solid var(--border);
+  background: var(--secondary-bg);
 }
 
 .header-left {
@@ -146,7 +150,7 @@ a:hover {
   padding: 8px 14px;
   background: var(--bg);
   color: var(--text);
-  border: 2px solid var(--border);
+  border: 1px solid var(--line);
   font-family: inherit;
   font-size: 13px;
   font-weight: 900;
@@ -209,17 +213,16 @@ a:hover {
   color: var(--accent-text);
 }
 
-/* ── Toolbar ── */
+/* ── Toolbar (色块背景, 去横线) ── */
 .toolbar {
   display: flex;
   justify-content: space-between;
   align-items: center;
   padding: 12px 20px;
-  border-bottom: 2px solid var(--border);
   position: sticky;
   top: 0;
   z-index: 10;
-  background: var(--bg);
+  background: var(--secondary-bg);
 }
 
 .toolbar-left,
@@ -238,7 +241,6 @@ a:hover {
   display: flex;
   align-items: center;
   padding: 12px 20px;
-  border-bottom: 1px solid var(--border);
   cursor: default;
   transition: background 0.1s;
   /* Touch: prevent iOS long-press text-selection callout and text highlight
@@ -263,7 +265,7 @@ a:hover {
 }
 
 .file-row.header {
-  border-bottom: 2px solid var(--border);
+  border-bottom: 1px solid var(--line);
   font-size: 11px;
   font-weight: 700;
   color: var(--muted);
@@ -335,7 +337,7 @@ a:hover {
   align-items: center;
   justify-content: center;
   z-index: 100;
-  border: 3px dashed var(--border);
+  border: 2px dashed var(--line);
 }
 
 .drag-message {
@@ -350,11 +352,10 @@ a:hover {
 .ctx-menu {
   position: fixed;
   background: var(--bg);
-  border: 2px solid var(--border);
+  border: 1px solid var(--line);
   padding: 4px 0;
   min-width: 180px;
   z-index: 200;
-  box-shadow: 4px 4px 0 var(--shadow);
 }
 
 .ctx-item {
@@ -397,38 +398,41 @@ a:hover {
   background: var(--card-bg);
   width: 100%;
   max-width: 460px;
-  border: 2px solid var(--border);
-  box-shadow: 8px 8px 0 var(--shadow);
+  border: 1px solid var(--line);
 }
 
+/* 标题栏沿用 sample 的“反色色块”, 去掉底部横线 */
 .modal-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 14px 20px;
-  border-bottom: 4px solid var(--border);
+  padding: 8px 14px;
+  background: var(--text);
+  color: var(--bg);
   text-transform: uppercase;
   font-weight: 900;
-  letter-spacing: 0.5px;
+  letter-spacing: 2px;
 }
 
 .modal-header h3 {
   margin: 0;
-  font-size: 15px;
+  font-size: 13px;
 }
 
 .modal-close {
   background: none;
   border: none;
-  color: var(--muted);
-  font-size: 1.6em;
+  color: var(--bg);
+  opacity: 0.7;
+  font-size: 1.4em;
   cursor: pointer;
   font-family: inherit;
   line-height: 1;
 }
 
 .modal-close:hover {
-  color: var(--text);
+  opacity: 1;
+  color: var(--bg);
 }
 
 #modal-body {
@@ -448,7 +452,7 @@ a:hover {
   width: 100%;
   padding: 12px;
   background: var(--input-bg);
-  border: 2px solid var(--border);
+  border: 1px solid var(--line);
   color: var(--text);
   font-family: inherit;
   font-size: 15px;
@@ -465,7 +469,6 @@ a:hover {
   justify-content: flex-end;
   gap: 10px;
   padding: 14px 20px;
-  border-top: 2px solid var(--border);
 }
 
 /* ── Upload progress ── */
@@ -474,11 +477,10 @@ a:hover {
   bottom: 20px;
   right: 20px;
   background: var(--bg);
-  border: 2px solid var(--border);
+  border: 1px solid var(--line);
   padding: 12px 16px;
   min-width: 260px;
   z-index: 150;
-  box-shadow: 4px 4px 0 var(--shadow);
 }
 
 .progress-header {
@@ -493,7 +495,6 @@ a:hover {
 .progress-bar {
   height: 8px;
   background: var(--input-bg);
-  border: 1px solid var(--border);
 }
 
 .progress-fill {
@@ -507,33 +508,35 @@ a:hover {
   position: fixed;
   inset: 20px;
   background: var(--bg);
-  border: 2px solid var(--border);
+  border: 1px solid var(--line);
   z-index: 250;
   overflow: hidden;
   display: flex;
   flex-direction: column;
-  box-shadow: 8px 8px 0 var(--shadow);
 }
 
+/* 反色色块标题栏, 去横线 */
 .admin-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 14px 20px;
-  border-bottom: 4px solid var(--border);
+  padding: 8px 16px;
+  background: var(--text);
+  color: var(--bg);
 }
 
 .admin-header h3 {
   margin: 0;
   text-transform: uppercase;
   font-weight: 900;
-  font-size: 15px;
-  letter-spacing: 0.5px;
+  font-size: 13px;
+  letter-spacing: 2px;
 }
 
+/* 标签页: 色块选中态, 去下划线 */
 .admin-tabs {
   display: flex;
-  border-bottom: 2px solid var(--border);
+  background: var(--secondary-bg);
 }
 
 .admin-tab {
@@ -546,16 +549,16 @@ a:hover {
   font-size: 13px;
   font-weight: 900;
   text-transform: uppercase;
-  border-bottom: 3px solid transparent;
 }
 
 .admin-tab:hover {
   color: var(--text);
+  background: var(--row-hover);
 }
 
 .admin-tab.active {
-  color: var(--text);
-  border-bottom-color: var(--accent);
+  color: var(--accent-text);
+  background: var(--accent);
 }
 
 #admin-content {
@@ -571,7 +574,6 @@ a:hover {
   justify-content: space-between;
   align-items: center;
   padding: 10px 4px;
-  border-bottom: 1px solid var(--border);
   font-size: 13px;
   gap: 12px;
 }
@@ -588,7 +590,7 @@ a:hover {
 .admin-form-row input {
   padding: 8px 10px;
   background: var(--input-bg);
-  border: 2px solid var(--border);
+  border: 1px solid var(--line);
   color: var(--text);
   font-family: inherit;
   font-size: 13px;
@@ -619,7 +621,6 @@ a:hover {
   justify-content: space-between;
   align-items: center;
   padding: 8px 0;
-  border-bottom: 1px solid var(--border);
   font-size: 13px;
 }
 
@@ -676,13 +677,12 @@ a:hover {
   bottom: 20px;
   right: 20px;
   background: var(--bg);
-  border: 2px solid var(--border);
+  border: 1px solid var(--line);
   width: min(360px, calc(100vw - 40px));
   max-height: 50vh;
   display: flex;
   flex-direction: column;
   z-index: 150;
-  box-shadow: 4px 4px 0 var(--shadow);
 }
 
 .transfers-header {
@@ -690,7 +690,7 @@ a:hover {
   justify-content: space-between;
   align-items: center;
   padding: 10px 14px;
-  border-bottom: 2px solid var(--border);
+  background: var(--secondary-bg);
   font-size: 12px;
   font-weight: 900;
   text-transform: uppercase;
@@ -704,11 +704,6 @@ a:hover {
 
 .transfer-row {
   padding: 8px 0;
-  border-bottom: 1px solid var(--border);
-}
-
-.transfer-row:last-child {
-  border-bottom: none;
 }
 
 .transfer-top {
