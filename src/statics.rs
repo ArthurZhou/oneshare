@@ -50,6 +50,7 @@ async fn embedded_serve(uri: axum::http::Uri) -> axum::response::Response {
         "/" | "/index.html" => (Body::from(INDEX_HTML), "text/html; charset=utf-8"),
         "/css/main.css" => (Body::from(STYLE_CSS), "text/css; charset=utf-8"),
         "/js/api.js" => (Body::from(API_JS), "application/javascript; charset=utf-8"),
+        "/js/icons.js" => (Body::from(ICONS_JS), "application/javascript; charset=utf-8"),
         "/js/auth.js" => (Body::from(AUTH_JS), "application/javascript; charset=utf-8"),
         "/js/libfw.js" => (Body::from(LIBFW_JS), "application/javascript; charset=utf-8"),
         "/js/file-explorer.js" => (Body::from(FILE_EXPLORER_JS), "application/javascript; charset=utf-8"),
@@ -80,6 +81,8 @@ static INDEX_HTML: &str = include_str!("../static/index.html");
 static STYLE_CSS: &str = include_str!("../static/css/main.css");
 #[cfg(not(debug_assertions))]
 static API_JS: &str = include_str!("../static/js/api.js");
+#[cfg(not(debug_assertions))]
+static ICONS_JS: &str = include_str!("../static/js/icons.js");
 #[cfg(not(debug_assertions))]
 static AUTH_JS: &str = include_str!("../static/js/auth.js");
 #[cfg(not(debug_assertions))]
