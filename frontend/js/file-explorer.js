@@ -413,14 +413,20 @@ function transferStatusLabel(t) {
 function transferPct(t) {
   if (t.total > 0) {
     const pct = Math.min(100, Math.round(((t.done || 0) / t.total) * 100));
-    // The libfw engine reports upload progress as bytes DISPATCHED into the
-    // WebSocket (not bytes the server has confirmed), so it can hit 100%
-    // before the transfer is actually complete. Never claim 100% while a
-    // transfer is still active — only the post-completion path (status
-    // 'done') shows 100%.
+    // Since libfw 0.2.4 the engine reports server-confirmed progress, so
+    // `done` only reaches 100% when the transfer is actually complete. Keep
+    // a 99 cap while active purely so we never show 100% before the
+    // post-completion 'done' state.
     return t.status === 'active' ? Math.min(99, pct) : pct;
   }
   return 0;
+}
+
+// While finalizing, show the REAL percentage (98→100%) so the bar visibly
+// fills to completion instead of sitting frozen at the 99% active cap.
+function finalizingPct(t) {
+  if (t.total > 0) return Math.min(100, Math.round(((t.done || 0) / t.total) * 100));
+  return 99;
 }
 
 function renderTransfers() {
@@ -446,17 +452,17 @@ function renderTransfers() {
     const sub = t.kind === 'upload'
       ? `Upload · ${formatSize(t.total)}`
       : 'Download';
-    const fillW = done ? 100 : transferPct(t);
+    const pctVal = done ? 100 : (finalizing ? finalizingPct(t) : transferPct(t));
     return `
       <div class="transfer-row">
         <div class="transfer-top">
           <span class="transfer-name" title="${escapeHtml(t.name)}">${arrow} ${escapeHtml(t.name)}</span>
           <span class="transfer-right">
-            <span class="transfer-pct">${done ? '100%' : transferPct(t) + '%'} ${transferStatusLabel(t)}</span>
+            <span class="transfer-pct">${done ? '100%' : pctVal + '%'} ${transferStatusLabel(t)}</span>
             ${action}
           </span>
         </div>
-        <div class="progress-bar"><div class="progress-fill${finalizing ? ' finalizing' : ''}" style="width:${fillW}%"></div></div>
+        <div class="progress-bar"><div class="progress-fill${finalizing ? ' finalizing' : ''}" style="width:${pctVal}%"></div></div>
         <div class="transfer-sub">${sub}${t.error ? ` · <span class="err">${escapeHtml(t.error)}</span>` : ''}</div>
       </div>`;
   }).join('');
@@ -546,9 +552,10 @@ async function runUploadTask(t, destPath, token, items) {
       if (ev.type === 'progress') updateTransfer(t.id, {
         done: ev.done,
         total: ev.total,
-        // Engine reports flushed bytes; done reaching total means everything
-        // is on the wire but the server hasn't confirmed — enter finalizing.
-        finalizing: !!(ev.total > 0 && ev.done >= ev.total),
+        // libfw 0.2.4 reports server-confirmed progress; the last ~2% is the
+        // brief "finalizing" tail before COMPLETE. Keep the animated bar so
+        // it reads as finishing rather than a frozen 99%.
+        finalizing: !!(ev.total > 0 && ev.done / ev.total >= 0.98),
       });
     });
     updateTransfer(t.id, { status: 'done', done: t.total, finalizing: false });
@@ -592,7 +599,7 @@ async function runFileDownloadTask(t, path, name, token, realPath) {
       if (ev.type === 'progress') updateTransfer(t.id, {
         done: ev.done,
         total: ev.total,
-        finalizing: !!(ev.total > 0 && ev.done >= ev.total),
+        finalizing: !!(ev.total > 0 && ev.done / ev.total >= 0.98),
       });
     };
     // libfw-client 0.2.0 saves the file itself (streamed into a user-picked
@@ -635,7 +642,7 @@ async function runFolderDownloadTask(t, path, name, token, realPath) {
       if (ev.type === 'progress') updateTransfer(t.id, {
         done: ev.done,
         total: ev.total,
-        finalizing: !!(ev.total > 0 && ev.done >= ev.total),
+        finalizing: !!(ev.total > 0 && ev.done / ev.total >= 0.98),
       });
     });
     updateTransfer(t.id, { status: 'done', done: bytes, finalizing: false });
