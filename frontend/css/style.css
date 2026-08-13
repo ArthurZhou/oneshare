@@ -621,6 +621,29 @@ a:hover {
   transition: width 0.3s;
 }
 
+/* Finalizing: all bytes flushed but the server hasn't confirmed COMPLETE yet
+   (a long phase on low-bandwidth / high-latency links). Shimmer the fill so
+   the bar keeps visibly moving instead of freezing at 99%. */
+.progress-fill.finalizing {
+  background: linear-gradient(90deg, var(--accent) 25%, rgba(255, 255, 255, 0.4) 50%, var(--accent) 75%);
+  background-size: 200% 100%;
+  animation: oneshare-shimmer 1.2s linear infinite;
+}
+@keyframes oneshare-shimmer {
+  from { background-position: 200% 0; }
+  to { background-position: -200% 0; }
+}
+
+/* Spinner for the "finalizing" status label. */
+.spin {
+  display: inline-block;
+  animation: oneshare-spin 1s linear infinite;
+  vertical-align: -0.125em;
+}
+@keyframes oneshare-spin {
+  to { transform: rotate(360deg); }
+}
+
 /* ── Admin panel ── */
 .admin-panel {
   position: fixed;

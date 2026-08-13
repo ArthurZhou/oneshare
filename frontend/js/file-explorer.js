@@ -397,6 +397,10 @@ function removeTransfer(id) {
 }
 
 function transferStatusLabel(t) {
+  // All data has been flushed to the server but it hasn't confirmed COMPLETE
+  // yet (a long phase on low-bandwidth / high-latency links). Show a clear
+  // "finalizing" state so it never reads as a stuck 99%.
+  if (t.finalizing) return `${iconSvg('refresh-cw', 'spin')} finalizing`;
   switch (t.status) {
     case 'active': return '...';
     case 'done': return `${iconSvg('check')} done`;
@@ -431,6 +435,9 @@ function renderTransfers() {
 
   list.innerHTML = transfers.map(t => {
     const done = t.status === 'done';
+    // "finalizing": all bytes flushed to the server but COMPLETE not yet
+    // confirmed — the row keeps an animated bar instead of freezing at 99%.
+    const finalizing = t.status === 'active' && !!t.finalizing;
     const finished = done || t.status === 'error' || t.status === 'cancelled';
     const action = finished
       ? `<button class="btn btn-sm" data-xfer-remove="${t.id}" title="Remove">${iconSvg('x')}</button>`
@@ -439,6 +446,7 @@ function renderTransfers() {
     const sub = t.kind === 'upload'
       ? `Upload · ${formatSize(t.total)}`
       : 'Download';
+    const fillW = done ? 100 : transferPct(t);
     return `
       <div class="transfer-row">
         <div class="transfer-top">
@@ -448,7 +456,7 @@ function renderTransfers() {
             ${action}
           </span>
         </div>
-        <div class="progress-bar"><div class="progress-fill" style="width:${done ? 100 : transferPct(t)}%"></div></div>
+        <div class="progress-bar"><div class="progress-fill${finalizing ? ' finalizing' : ''}" style="width:${fillW}%"></div></div>
         <div class="transfer-sub">${sub}${t.error ? ` · <span class="err">${escapeHtml(t.error)}</span>` : ''}</div>
       </div>`;
   }).join('');
@@ -531,12 +539,19 @@ async function handleUpload(input) {
 async function runUploadTask(t, destPath, token, items) {
   t.status = 'active';
   t.error = null;
+  t.finalizing = false;
   renderTransfers();
   try {
     await Libfw.upload(destPath, token, items, (ev) => {
-      if (ev.type === 'progress') updateTransfer(t.id, { done: ev.done, total: ev.total });
+      if (ev.type === 'progress') updateTransfer(t.id, {
+        done: ev.done,
+        total: ev.total,
+        // Engine reports flushed bytes; done reaching total means everything
+        // is on the wire but the server hasn't confirmed — enter finalizing.
+        finalizing: !!(ev.total > 0 && ev.done >= ev.total),
+      });
     });
-    updateTransfer(t.id, { status: 'done', done: t.total });
+    updateTransfer(t.id, { status: 'done', done: t.total, finalizing: false });
     scheduleUploadRefresh();
   } catch (e) {
     const cancelled = e && (e.code === 'cancelled' || e.code === 'abort' || e.name === 'AbortError');
@@ -570,16 +585,21 @@ function downloadFile(path, name) {
 async function runFileDownloadTask(t, path, name, token, realPath) {
   t.status = 'active';
   t.error = null;
+  t.finalizing = false;
   renderTransfers();
   try {
     const progress = (ev) => {
-      if (ev.type === 'progress') updateTransfer(t.id, { done: ev.done, total: ev.total });
+      if (ev.type === 'progress') updateTransfer(t.id, {
+        done: ev.done,
+        total: ev.total,
+        finalizing: !!(ev.total > 0 && ev.done >= ev.total),
+      });
     };
     // libfw-client 0.2.0 saves the file itself (streamed into a user-picked
     // directory via FS API, or via a traditional browser download). The SDK
     // sends the path we give it over WebSocket, so pass the REAL path.
     const done = await Libfw.downloadFile(token, realPath, progress);
-    updateTransfer(t.id, { status: 'done', done });
+    updateTransfer(t.id, { status: 'done', done, finalizing: false });
     setTimeout(() => removeTransfer(t.id), 3000);
   } catch (e) {
     const cancelled = e && (e.code === 'cancelled' || e.code === 'abort' || e.name === 'AbortError');
@@ -604,6 +624,7 @@ function downloadFolder(path, name) {
 async function runFolderDownloadTask(t, path, name, token, realPath) {
   t.status = 'active';
   t.error = null;
+  t.finalizing = false;
   renderTransfers();
   try {
     // libfw-client 0.2.0 downloads the whole tree itself over WebSocket
@@ -611,9 +632,13 @@ async function runFolderDownloadTask(t, path, name, token, realPath) {
     // `.zip` and saved via a normal browser download). It sends the path we
     // give it, so pass the REAL root path of the folder.
     const bytes = await Libfw.downloadFolder(token, realPath, (ev) => {
-      if (ev.type === 'progress') updateTransfer(t.id, { done: ev.done, total: ev.total });
+      if (ev.type === 'progress') updateTransfer(t.id, {
+        done: ev.done,
+        total: ev.total,
+        finalizing: !!(ev.total > 0 && ev.done >= ev.total),
+      });
     });
-    updateTransfer(t.id, { status: 'done', done: bytes });
+    updateTransfer(t.id, { status: 'done', done: bytes, finalizing: false });
     setTimeout(() => removeTransfer(t.id), 3000);
   } catch (e) {
     const cancelled = e && (e.code === 'cancelled' || e.code === 'abort' || e.name === 'AbortError');
