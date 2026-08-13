@@ -1,6 +1,6 @@
 [package]
 name = "oneshare"
-version = "0.1.9"
+version = "0.1.10"
 edition = "2021"
 
 [dependencies]
@@ -15,7 +15,6 @@ toml = "0.8"
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
 rusqlite = { version = "0.31", features = ["bundled"] }
-openidconnect = "3"
 url = "2"
 percent-encoding = "2"
 sha2 = "0.10"

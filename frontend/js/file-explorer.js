@@ -166,6 +166,39 @@ function renderFiles(data) {
     });
     attachLongPress(row, (x, y) => openContextMenuAt(x, y, row));
   });
+
+  // Wire up drag-to-move: rows are only armed for dragging after a short
+  // hold (armDragHold), so quick clicks and scroll-drags still work. Drop
+  // targets are handled on the container + breadcrumb in setupMoveDragDrop.
+  el.querySelectorAll('.file-row').forEach(row => {
+    if (row.classList.contains('header')) return;
+    row.addEventListener('pointerdown', (e) => {
+      if (e.pointerType !== 'mouse') return;         // touch/pen use the long-press menu
+      if (e.button !== 0) return;                    // left button only
+      if (e.target.closest('[data-action]')) return; // not from action buttons
+      armDragHold(row, e);
+    });
+    row.addEventListener('dragstart', (e) => {
+      holdRow = null; // drag started; the mouseup cleanup must not un-arm us
+      dragSource = { path: row.dataset.path, name: row.dataset.name, isDir: row.dataset.isDir === 'true' };
+      if (e.dataTransfer) {
+        e.dataTransfer.effectAllowed = 'move';
+        try {
+          e.dataTransfer.setData('application/x-oneshare-move', row.dataset.path);
+          e.dataTransfer.setData('text/plain', row.dataset.name);
+        } catch (err) { /* some browsers restrict setData during dragstart */ }
+      }
+      row.classList.add('dragging');
+    });
+    row.addEventListener('dragend', () => {
+      dragSource = null;
+      row.classList.remove('dragging');
+      row.removeAttribute('draggable');
+      cancelDragHold();
+      clearDropTargets();
+      clearAutoEnter();
+    });
+  });
 }
 
 function openContextMenuAt(x, y, row) {
@@ -690,6 +723,272 @@ async function traverseEntry(entry, base, out) {
     for (const child of children) {
       await traverseEntry(child, childBase, out);
     }
+  }
+}
+
+// ── Drag & drop to MOVE files/folders ──
+//
+// Dragging an existing row lets you move it into another folder by dropping
+// it onto a folder row (the highlighted drop target) or onto an ancestor in
+// the breadcrumb path nav (never "Home"). This is separate from setupDragDrop,
+// which handles dropping files from the OS/another app as an UPLOAD.
+// `dragSource` (set on dragstart) identifies an internal move; external drags
+// carry `Files` in dataTransfer.types and are left to the upload handler.
+//
+// UX rules:
+// - A drag is only armed after HOLDING the row for DRAG_HOLD_MS (plain
+//   press-drag does nothing), so clicks and scroll-drags stay unaffected.
+// - A folder cannot be dropped onto itself or any of its own subfolders
+//   (isValidDropTargetDir), and hovering a valid folder for AUTO_ENTER_MS
+//   auto-navigates into it.
+
+let dragSource = null; // { path, name, isDir } of the row currently being dragged
+
+// ── Hold-to-drag ──
+// Rows are NOT draggable by default. A mousedown starts a DRAG_HOLD_MS timer;
+// if the pointer stays still until it fires, the row is armed (draggable=true)
+// and the drag can begin. Moving before the timer or releasing cancels the
+// arm, so quick clicks and scrolls work normally.
+const DRAG_HOLD_MS = 350;
+const DRAG_HOLD_TOLERANCE = 6; // px of pointer travel that cancels the arm
+let holdTimer = null;
+let holdRow = null;
+let holdStartX = 0;
+let holdStartY = 0;
+
+function armDragHold(row, e) {
+  cancelDragHold();
+  holdRow = row;
+  holdStartX = e.clientX;
+  holdStartY = e.clientY;
+  holdTimer = setTimeout(() => {
+    holdTimer = null;
+    if (holdRow && document.contains(holdRow)) {
+      holdRow.setAttribute('draggable', 'true'); // armed: next move starts the drag
+    }
+  }, DRAG_HOLD_MS);
+}
+
+function cancelDragHold() {
+  clearTimeout(holdTimer);
+  holdTimer = null;
+  if (holdRow) {
+    holdRow.removeAttribute('draggable');
+    holdRow = null;
+  }
+}
+
+// True while the pointer is over a move drop target, used to skip clearing
+// the highlight when dragleave fires between children inside the list.
+let dropDepth = 0;
+
+// Auto-enter: while dragging, hovering a valid folder for AUTO_ENTER_MS
+// navigates into it (like Windows Explorer / macOS).
+const AUTO_ENTER_MS = 800;
+let hoverDirPath = null;
+let autoEnterTimer = null;
+
+function clearAutoEnter() {
+  clearTimeout(autoEnterTimer);
+  autoEnterTimer = null;
+  hoverDirPath = null;
+}
+
+function isInternalMove(e) {
+  if (!dragSource) return false;
+  const dt = e.dataTransfer;
+  if (dt && dt.types) {
+    // If the OS/another app is dragging files, that's an upload, not a move.
+    if (Array.from(dt.types).includes('Files')) return false;
+  }
+  return true;
+}
+
+// Whether `destDir` is a legal move destination for the current drag:
+// - moving to the same location is a no-op → rejected;
+// - a folder cannot be moved into itself or any of its own subfolders.
+function isValidDropTargetDir(destDir) {
+  if (!dragSource) return false;
+  const destPath = (destDir ? destDir + '/' : '') + dragSource.name;
+  if (destPath === dragSource.path) return false;
+  if (dragSource.isDir) {
+    if (dragSource.path === destDir) return false;
+    if (destDir.startsWith(dragSource.path + '/')) return false;
+  }
+  return true;
+}
+
+function clearDropTargets() {
+  dropDepth = 0;
+  const list = document.getElementById('file-list');
+  if (list) list.classList.remove('drop-current');
+  document.querySelectorAll('.file-row.drop-target, #path-nav a.drop-target')
+    .forEach(el => el.classList.remove('drop-target'));
+}
+
+function updateDropHighlight(e) {
+  clearDropTargets();
+  const dirRow = e.target.closest ? e.target.closest('.file-row.dir') : null;
+  const dirPath = dirRow ? dirRow.dataset.path : null;
+  if (dirPath && isValidDropTargetDir(dirPath)) {
+    dirRow.classList.add('drop-target');
+  } else if (isValidDropTargetDir(currentPath)) {
+    // No folder row under the pointer: dropping on the blank area moves the
+    // item into the current directory (handy right after auto-entering it).
+    const list = document.getElementById('file-list');
+    if (list) list.classList.add('drop-current');
+  }
+}
+
+function setupMoveDragDrop() {
+  const el = document.getElementById('file-list');
+  if (!el) return;
+
+  // Hold-to-drag cancellation: moving during the hold, or releasing, cancels.
+  document.addEventListener('mousemove', (e) => {
+    if (holdRow && holdTimer) {
+      if (Math.abs(e.clientX - holdStartX) > DRAG_HOLD_TOLERANCE ||
+          Math.abs(e.clientY - holdStartY) > DRAG_HOLD_TOLERANCE) {
+        cancelDragHold();
+      }
+    }
+  });
+  document.addEventListener('mouseup', () => cancelDragHold());
+
+  el.addEventListener('dragenter', (e) => {
+    if (!isInternalMove(e)) return;
+    e.preventDefault();
+    dropDepth++;
+    updateDropHighlight(e);
+  });
+
+  el.addEventListener('dragover', (e) => {
+    if (!isInternalMove(e)) return;
+    const dirRow = e.target.closest ? e.target.closest('.file-row.dir') : null;
+    const dirPath = dirRow ? dirRow.dataset.path : null;
+
+    // Auto-enter: hovering a new valid folder restarts the navigation timer.
+    if (dirPath !== hoverDirPath) {
+      hoverDirPath = dirPath;
+      clearTimeout(autoEnterTimer);
+      autoEnterTimer = null;
+      if (dirPath && isValidDropTargetDir(dirPath)) {
+        autoEnterTimer = setTimeout(() => {
+          autoEnterTimer = null;
+          if (dragSource && hoverDirPath === dirPath && document.body.contains(dirRow)) {
+            clearAutoEnter();
+            navigate(dirPath);
+          }
+        }, AUTO_ENTER_MS);
+      }
+    }
+
+    // Drop target: a folder row under the pointer, else the blank area of
+    // the current directory (isValidDropTargetDir also rejects the source's
+    // own folder/children).
+    const targetable = dirPath
+      ? isValidDropTargetDir(dirPath)
+      : isValidDropTargetDir(currentPath);
+    if (!targetable) {
+      clearDropTargets();
+      return;
+    }
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+    updateDropHighlight(e);
+  });
+
+  el.addEventListener('dragleave', (e) => {
+    if (!isInternalMove(e)) return;
+    // Moving between children inside the list must not clear the highlight
+    // (relatedTarget is still within the list).
+    if (e.relatedTarget && el.contains(e.relatedTarget)) return;
+    dropDepth = Math.max(0, dropDepth - 1);
+    if (dropDepth === 0) {
+      clearDropTargets();
+      clearAutoEnter();
+    }
+  });
+
+  el.addEventListener('drop', (e) => {
+    dropDepth = 0;
+    if (!isInternalMove(e)) return;
+    const dirRow = e.target.closest ? e.target.closest('.file-row.dir') : null;
+    clearDropTargets();
+    clearAutoEnter();
+    if (dirRow) {
+      const destDir = dirRow.dataset.path;
+      if (!isValidDropTargetDir(destDir)) return; // folder onto itself/its child
+      e.preventDefault();
+      e.stopPropagation();
+      performMove(destDir);
+    } else if (isValidDropTargetDir(currentPath)) {
+      // Dropped on the blank area: move into the current directory (e.g.
+      // right after auto-entering it). Same-location drops are a no-op.
+      e.preventDefault();
+      e.stopPropagation();
+      performMove(currentPath);
+    }
+  });
+
+  // Breadcrumb path nav: dragging onto an ancestor link moves into that
+  // folder. "Home" (data-path="") is never a valid target.
+  const nav = document.getElementById('path-nav');
+  if (nav) {
+    nav.addEventListener('dragenter', (e) => {
+      if (!isInternalMove(e)) return;
+      e.preventDefault();
+    });
+    nav.addEventListener('dragover', (e) => {
+      if (!isInternalMove(e)) return;
+      const link = getNavTarget(e);
+      clearDropTargets();
+      if (!link) return;
+      e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+      link.classList.add('drop-target');
+    });
+    nav.addEventListener('dragleave', (e) => {
+      if (!isInternalMove(e)) return;
+      if (e.relatedTarget && nav.contains(e.relatedTarget)) return;
+      clearDropTargets();
+      clearAutoEnter();
+    });
+    nav.addEventListener('drop', (e) => {
+      if (!isInternalMove(e)) return;
+      const link = getNavTarget(e);
+      clearDropTargets();
+      clearAutoEnter();
+      if (!link) return;
+      e.preventDefault();
+      e.stopPropagation();
+      performMove(link.dataset.path);
+    });
+  }
+}
+
+// The ancestor breadcrumb link under the pointer that is a legal drop target,
+// or null (also rejects "Home" — data-path="" — and same/self destinations).
+function getNavTarget(e) {
+  const a = e.target.closest ? e.target.closest('#path-nav a[data-path]') : null;
+  if (!a) return null;
+  const dest = a.dataset.path || '';
+  if (dest === '' || !isValidDropTargetDir(dest)) return null;
+  return a;
+}
+
+async function performMove(destDir) {
+  const src = dragSource;
+  dragSource = null;
+  if (!src) return;
+  const destPath = (destDir ? destDir + '/' : '') + src.name;
+  // Dropped back where it already lives: nothing to do.
+  if (destPath === src.path) return;
+  try {
+    await API.moveFile(src.path, destPath);
+    loadFiles(currentPath);
+  } catch (e) {
+    alert('Move failed: ' + e.message);
   }
 }
 

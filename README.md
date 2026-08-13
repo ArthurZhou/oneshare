@@ -5,7 +5,9 @@ A self-hosted web file sharing application — like alist but serving only local
 **Features:**
 - 📂 Browse local directories with a responsive web UI
 - ⬆⬇ Upload & download files via [libfw](https://github.com/ArthurZhou/libfw) streaming protocol
-- ✏ Move, rename, delete, create folders
+- ✏ Move (drag & drop or menu), rename, delete, create folders
+- 🗑 Optional trash directory — deleted files/folders are moved there instead
+  of being permanently deleted
 - 🔐 OIDC authentication (supports Authentik, Keycloak, Google, etc.)
 - 🔒 ACL-based access control (per-path, per-user, per-group)
 - 👥 User groups for simplified permission management
@@ -77,6 +79,7 @@ All settings are in `config.toml`:
 | `[server]` | `session_cookie_key` | *(default)* | Cookie encryption key |
 | `[server]` | `hmac_secret` | *(default)* | HMAC secret for libfw bearer tokens |
 | `[server]` | `base_url` | `""` | URL prefix (base path) when serving behind a reverse proxy, e.g. `/oneshare`. Empty = domain root. |
+| `[server]` | `trash_dir` | `""` | Trash directory for deletions. When set, deleted files/folders are **moved** here (relative path preserved) instead of being deleted permanently. Relative paths resolve against `root_dir` (e.g. `.trash`); empty = delete permanently. |
 | `[oidc]` | `issuer_url` | *(required)* | OIDC issuer URL |
 | `[oidc]` | `client_id` | *(required)* | OIDC client ID |
 | `[oidc]` | `client_secret` | *(required)* | OIDC client secret |

@@ -135,6 +135,16 @@ pub struct ServerConfig {
     /// separate origin really needs to call the API.
     #[serde(default)]
     pub allowed_origins: Vec<String>,
+    /// Trash directory for deletions. When non-empty, deleting a file/folder
+    /// MOVES it into this directory (preserving its relative path) instead of
+    /// deleting it permanently, so it can be recovered. Empty (default) =
+    /// delete permanently.
+    ///
+    /// Relative paths are resolved against `root_dir`; `.trash` is a good
+    /// choice because dot-prefixed entries are hidden from listings. Absolute
+    /// paths are used as-is.
+    #[serde(default)]
+    pub trash_dir: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -180,6 +190,23 @@ impl Config {
 
     pub fn hmac_secret(&self) -> &str {
         &self.server.hmac_secret
+    }
+
+    /// The resolved trash directory, or `None` when `trash_dir` is empty/blank
+    /// (i.e. deletions are permanent). Relative paths resolve against
+    /// `root_dir`; absolute paths are used as-is.
+    pub fn trash_path(&self) -> Option<PathBuf> {
+        let t = self.server.trash_dir.trim();
+        if t.is_empty() {
+            None
+        } else {
+            let p = PathBuf::from(t);
+            Some(if p.is_absolute() {
+                p
+            } else {
+                self.server.root_dir.join(p)
+            })
+        }
     }
 
     /// Normalized URL prefix (base path). Empty string (or "/") means the app

@@ -34,10 +34,17 @@ pub async fn config_js(State(state): State<Arc<AppState>>) -> impl IntoResponse 
         "maxRetryDelayMs": libfw.max_retry_delay_ms,
         "timeoutMs": libfw.timeout_ms,
     });
+    // `window.ONESHARE_TRASH` tells the frontend whether deletions are moved
+    // to the configured trash directory (instead of being permanently
+    // deleted), so the UI can word its delete confirmation accordingly.
+    let trash_json = serde_json::json!({
+        "enabled": state.config.trash_path().is_some(),
+    });
     let body = format!(
-        "// OneShare bootstrap config\nwindow.ONESHARE_BASE = {};\nwindow.ONESHARE_LIBFW = {};\n",
+        "// OneShare bootstrap config\nwindow.ONESHARE_BASE = {};\nwindow.ONESHARE_LIBFW = {};\nwindow.ONESHARE_TRASH = {};\n",
         serde_json::to_string(&base).unwrap_or_else(|_| "\"\"".to_string()),
-        serde_json::to_string(&libfw_json).unwrap_or_else(|_| "{}".to_string())
+        serde_json::to_string(&libfw_json).unwrap_or_else(|_| "{}".to_string()),
+        serde_json::to_string(&trash_json).unwrap_or_else(|_| "{\"enabled\":false}".to_string())
     );
     (
         [(header::CONTENT_TYPE, "application/javascript; charset=utf-8")],

@@ -257,6 +257,22 @@ pub async fn delete(
         return Err(StatusCode::NOT_FOUND);
     }
 
+    // When a trash directory is configured, "deleting" MOVES the item into it
+    // (preserving its relative path so it can be recovered). An empty
+    // `trash_dir` deletes permanently, as before.
+    if let Some(trash) = state.config.trash_path() {
+        move_to_trash(&trash, &full_path, &real).map_err(|e| {
+            tracing::error!(
+                "Failed to move '{}' to trash '{}': {}",
+                full_path.display(),
+                trash.display(),
+                e
+            );
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+        return Ok(StatusCode::OK);
+    }
+
     if full_path.is_dir() {
         std::fs::remove_dir_all(&full_path).map_err(|e| {
             tracing::error!("Failed to delete dir: {}", e);
@@ -270,6 +286,95 @@ pub async fn delete(
     }
 
     Ok(StatusCode::OK)
+}
+
+/// Find a non-colliding destination for `real` inside the trash directory,
+/// preserving the item's relative path structure (so the source location is
+/// easy to recover) and appending `" (N)"` to the leaf name when a same-named
+/// item already exists there (typical OS trash/duplicate behavior).
+fn unique_trash_path(trash: &std::path::Path, real: &str) -> std::path::PathBuf {
+    let target = trash.join(real);
+    if !target.exists() {
+        return target;
+    }
+    let leaf = target
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("item")
+        .to_string();
+    let (stem, ext) = match leaf.rfind('.') {
+        Some(i) if i > 0 => (leaf[..i].to_string(), leaf[i..].to_string()),
+        _ => (leaf.clone(), String::new()),
+    };
+    let parent = target.parent().unwrap_or(trash).to_path_buf();
+    for n in 1..100_000 {
+        let candidate = parent.join(format!("{} ({}){}", stem, n, ext));
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    // Effectively unreachable; fall back to a timestamp suffix.
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    parent.join(format!("{}-{}{}", stem, ts, ext))
+}
+
+/// Move `src` into the trash directory at `real`'s relative path (creating
+/// parent dirs as needed). Falls back to copy+remove when `rename` fails
+/// (e.g. the trash lives on a different filesystem, EXDEV), so a trash dir
+/// on another volume still works. Returns the final trash location.
+fn move_to_trash(
+    trash: &std::path::Path,
+    src: &std::path::Path,
+    real: &str,
+) -> std::io::Result<std::path::PathBuf> {
+    let target = unique_trash_path(trash, real);
+    if let Some(parent) = target.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    match std::fs::rename(src, &target) {
+        Ok(()) => Ok(target),
+        Err(first_err) => {
+            tracing::warn!(
+                "rename '{}' -> '{}' failed ({}); falling back to copy+remove",
+                src.display(),
+                target.display(),
+                first_err
+            );
+            // Cross-device (EXDEV) or similar: copy then remove the source so
+            // the delete still succeeds and the original is only removed once
+            // the trash copy is complete.
+            let copied = if src.is_dir() {
+                copy_dir_recursive(src, &target)
+                    .and_then(|()| std::fs::remove_dir_all(src))
+            } else {
+                std::fs::copy(src, &target).and_then(|_| std::fs::remove_file(src))
+            };
+            match copied {
+                Ok(()) => Ok(target),
+                Err(_) => Err(first_err),
+            }
+        }
+    }
+}
+
+/// Recursively copy a directory tree (used for cross-device trash moves).
+fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        if file_type.is_dir() {
+            copy_dir_recursive(&from, &to)?;
+        } else {
+            std::fs::copy(&from, &to)?;
+        }
+    }
+    Ok(())
 }
 
 pub async fn rename(
@@ -468,4 +573,86 @@ pub async fn get_token(
         expires_in: ttl_secs,
         real_path,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_root(name: &str) -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!("oneshare-{}-{}", name, std::process::id()));
+        let _ = std::fs::remove_dir_all(&p);
+        p
+    }
+
+    #[test]
+    fn unique_trash_path_preserves_structure_and_avoids_collision() {
+        let root = temp_root("trash-path");
+        let trash = root.join("data").join(".trash");
+        std::fs::create_dir_all(&trash).unwrap();
+
+        // First time: the relative path is preserved verbatim.
+        let p1 = unique_trash_path(&trash, "docs/report.txt");
+        assert_eq!(p1, trash.join("docs").join("report.txt"));
+
+        // Existing item in the trash: the leaf gets a " (N)" suffix.
+        std::fs::create_dir_all(p1.parent().unwrap()).unwrap();
+        std::fs::write(&p1, "x").unwrap();
+        let p2 = unique_trash_path(&trash, "docs/report.txt");
+        assert_ne!(p2, p1);
+        assert!(p2.to_string_lossy().ends_with("report (1).txt"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn move_to_trash_moves_file_and_preserves_relative_path() {
+        let root = temp_root("trash-move-file");
+        let src_file = root.join("data").join("docs").join("a.txt");
+        std::fs::create_dir_all(src_file.parent().unwrap()).unwrap();
+        std::fs::write(&src_file, "hello").unwrap();
+        let trash = root.join("data").join(".trash");
+
+        let target = move_to_trash(&trash, &src_file, "docs/a.txt").unwrap();
+        assert_eq!(target, trash.join("docs").join("a.txt"));
+        assert!(!src_file.exists(), "source must no longer exist");
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "hello");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn move_to_trash_moves_whole_dir() {
+        let root = temp_root("trash-move-dir");
+        let src_dir = root.join("data").join("folder");
+        std::fs::create_dir_all(src_dir.join("sub")).unwrap();
+        std::fs::write(src_dir.join("sub").join("f.txt"), "x").unwrap();
+        let trash = root.join("data").join(".trash");
+
+        let target = move_to_trash(&trash, &src_dir, "folder").unwrap();
+        assert!(!src_dir.exists(), "source dir must no longer exist");
+        assert!(target.join("sub").join("f.txt").exists());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn move_to_trash_renames_on_collision() {
+        let root = temp_root("trash-move-collision");
+        let src_file = root.join("data").join("a.txt");
+        std::fs::create_dir_all(src_file.parent().unwrap()).unwrap();
+        std::fs::write(&src_file, "new").unwrap();
+        let trash = root.join("data").join(".trash");
+        // Pre-existing trash item with the same relative path.
+        std::fs::create_dir_all(&trash).unwrap();
+        std::fs::write(trash.join("a.txt"), "old").unwrap();
+
+        let target = move_to_trash(&trash, &src_file, "a.txt").unwrap();
+        assert!(target.to_string_lossy().ends_with("a (1).txt"));
+        assert!(!src_file.exists());
+        assert_eq!(std::fs::read_to_string(trash.join("a.txt")).unwrap(), "old");
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "new");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

@@ -55,6 +55,19 @@
   padding: 0;
 }
 
+::-webkit-scrollbar {
+  width: 3px;
+  transition: ease .5s;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--text);
+}
+::-webkit-scrollbar-track {
+  background: var(--line);
+  -webkit-backdrop-filter: blur(2px);
+  backdrop-filter: blur(2px);
+}
+
 html,
 body {
   min-height: 100vh;
@@ -189,6 +202,15 @@ a:hover {
 
 .path-nav a:hover {
   color: var(--text);
+}
+
+/* Drag & drop move: a breadcrumb ancestor link being hovered as a drop
+   target (Home is never a target). Solid line + secondary-bg, matching the
+   design language instead of a dashed outline. */
+.path-nav a.drop-target {
+  background: var(--secondary-bg);
+  outline: 1px solid var(--line);
+  outline-offset: 0;
 }
 
 .path-nav .sep {
@@ -380,6 +402,28 @@ a:hover {
 
 .file-row.dir {
   cursor: pointer;
+}
+
+/* Drag & drop move: the row being dragged is dimmed; a folder row under the
+   pointer is outlined as the drop target. */
+.file-row.dragging {
+  opacity: 0.4;
+}
+
+.file-row.drop-target {
+  /* Crisp solid line + subtle secondary-bg fill (same tone as hover/panels),
+     so the row text is never obscured and it matches the design language. */
+  background: var(--secondary-bg);
+  outline: 1px solid var(--line);
+  outline-offset: -1px;
+}
+
+/* Blank-area drop target: dropping on the list's empty space moves the item
+   into the current directory. */
+.file-list.drop-current {
+  background: var(--secondary-bg);
+  outline: 1px solid var(--line);
+  outline-offset: -1px;
 }
 
 .loading,

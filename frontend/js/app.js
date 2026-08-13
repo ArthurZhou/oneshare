@@ -13,6 +13,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Setup event listeners
   setupEventListeners();
   setupDragDrop();
+  setupMoveDragDrop();
 
   // Close context menu on click outside
   document.addEventListener('click', () => hideContextMenu());

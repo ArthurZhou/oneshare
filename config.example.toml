@@ -16,6 +16,12 @@ base_url = ""
 session_cookie_secure = false
 # Optional CORS allowlist of origins (empty = same-origin only).
 allowed_origins = []
+# Trash directory for deletions. When set, deleted files/folders are MOVED
+# here (preserving their relative path) instead of being deleted permanently,
+# so they can be recovered. Relative paths resolve against root_dir (".trash"
+# is a good choice — dot-prefixed entries are hidden from listings). Empty
+# (default) = delete permanently.
+trash_dir = ".trash"
 
 [oidc]
 issuer_url = "https://login.example.com"
