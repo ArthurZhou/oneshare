@@ -157,14 +157,15 @@ function renderFiles(data) {
     });
   });
 
-  // Wire up context menu: right-click on desktop, long-press on touch.
+  // Wire up context menu: right-click on desktop; on touch, a long-press
+  // either lifts the row to drag it or opens the menu (attachRowTouch).
   el.querySelectorAll('.file-row').forEach(row => {
     if (row.classList.contains('header')) return;
     row.addEventListener('contextmenu', (e) => {
       e.preventDefault();
       openContextMenuAt(e.clientX, e.clientY, row);
     });
-    attachLongPress(row, (x, y) => openContextMenuAt(x, y, row));
+    attachRowTouch(row);
   });
 
   // Wire up drag-to-move: rows are only armed for dragging after a short
@@ -230,59 +231,115 @@ function hideContextMenu() {
   document.getElementById('ctx-menu').style.display = 'none';
 }
 
-// ── Touch long-press → context menu ──
-// Touchscreens have no right-click, so holding a file/folder row for
-// ~LONG_PRESS_MS (without scrolling) opens the context menu, exactly like a
-// right click on desktop. The synthetic `click` that a long-press produces is
-// suppressed so it can't navigate the row (dir rows) or immediately dismiss
-// the menu.
-const LONG_PRESS_MS = 500;
-const LONG_PRESS_MOVE_TOLERANCE = 10; // px of finger travel that cancels
-// Clicks on a ROW are swallowed for this long after a long-press, so the
+// ── Touch: long-press lifts a row to drag, or opens the context menu ──
+// Touchscreens have no right-click, so holding a row for ~TOUCH_LIFT_MS
+// "lifts" it: if the finger then moves it becomes a drag-and-drop move (drop
+// onto a folder row, a breadcrumb link, or the blank area of the current
+// dir); if it lifts without moving, the context menu opens (old long-press
+// behavior). Moving before the lift is treated as a scroll and cancels it.
+const TOUCH_LIFT_MS = 400;
+const TOUCH_LIFT_MOVE_TOLERANCE = 10; // px of travel before the lift that cancels
+const TOUCH_DRAG_START_TOLERANCE = 8; // px of travel after the lift that starts a drag
+// Clicks on a ROW are swallowed for this long after a touch gesture, so the
 // browser's synthetic click (fired right after the finger lifts) can't
 // navigate the row or dismiss the just-opened menu. Clicks on the context
 // menu itself are never affected, so a tap on a menu item always works even
 // if the browser happened not to emit the synthetic row click.
 let suppressRowClicksUntil = 0;
 
-function attachLongPress(el, onLongPress) {
+function attachRowTouch(row) {
   let timer = null;
-  let startX = 0;
-  let startY = 0;
+  let startX = 0, startY = 0;
+  let touchId = null;
+  let lifted = false;   // long-press fired → the row is picked up
+  let dragging = false; // finger moved after lift → it's a drag
+  let lastX = 0, lastY = 0;
+  let touchTarget = null;
 
-  const clear = () => {
-    if (timer) { clearTimeout(timer); timer = null; }
+  const clearTimer = () => { if (timer) { clearTimeout(timer); timer = null; } };
+  const cleanup = () => {
+    clearTimer();
+    lifted = false;
+    dragging = false;
+    touchId = null;
+    touchTarget = null;
+    row.classList.remove('dragging');
   };
 
-  el.addEventListener('touchstart', (e) => {
+  row.addEventListener('touchstart', (e) => {
     // Don't hijack taps on the row's action buttons (they have their own
     // click handlers and are meant to be tapped, not long-pressed).
     if (e.target.closest('[data-action]')) return;
     const t = e.touches[0];
     if (!t) return;
-    startX = t.clientX;
-    startY = t.clientY;
-    clear();
+    cleanup();
+    touchId = t.identifier;
+    startX = lastX = t.clientX;
+    startY = lastY = t.clientY;
     timer = setTimeout(() => {
       timer = null;
-      suppressRowClicksUntil = Date.now() + 800;
-      if (navigator.vibrate) { try { navigator.vibrate(15); } catch (err) { /* noop */ } }
-      onLongPress(startX, startY);
-    }, LONG_PRESS_MS);
+      lifted = true;
+      dragSource = { path: row.dataset.path, name: row.dataset.name, isDir: row.dataset.isDir === 'true' };
+      row.classList.add('dragging');
+    }, TOUCH_LIFT_MS);
   }, { passive: true });
 
-  // Scrolling / dragging cancels the long-press.
-  el.addEventListener('touchmove', (e) => {
-    const t = e.touches[0];
+  row.addEventListener('touchmove', (e) => {
+    let t = null;
+    for (const ct of e.touches) if (ct.identifier === touchId) t = ct;
     if (!t) return;
-    if (Math.abs(t.clientX - startX) > LONG_PRESS_MOVE_TOLERANCE ||
-        Math.abs(t.clientY - startY) > LONG_PRESS_MOVE_TOLERANCE) {
-      clear();
+    lastX = t.clientX; lastY = t.clientY;
+    if (!lifted) {
+      // Not lifted yet: real movement means a scroll — cancel the lift.
+      if (Math.abs(t.clientX - startX) > TOUCH_LIFT_MOVE_TOLERANCE ||
+          Math.abs(t.clientY - startY) > TOUCH_LIFT_MOVE_TOLERANCE) {
+        clearTimer();
+      }
+      return;
+    }
+    if (!dragging) {
+      if (Math.abs(t.clientX - startX) > TOUCH_DRAG_START_TOLERANCE ||
+          Math.abs(t.clientY - startY) > TOUCH_DRAG_START_TOLERANCE) {
+        dragging = true;
+      } else {
+        return; // lifted but not yet moved far enough
+      }
+    }
+    // Track the drop target under the finger and auto-enter folders on hold.
+    touchTarget = dropTargetFromPoint(lastX, lastY);
+    applyTargetHighlight(touchTarget);
+    armAutoEnter(touchTarget && touchTarget.kind === 'dir' ? touchTarget.path : null, touchTarget ? touchTarget.el : null);
+  }, { passive: true });
+
+  row.addEventListener('touchend', (e) => {
+    clearTimer();
+    if (!lifted) return;
+    const wasDragging = dragging;
+    const target = touchTarget;
+    cleanup();
+    if (wasDragging) {
+      clearAutoEnter();
+      if (target && target.kind !== 'none') {
+        performMove(target.path);
+      } else {
+        dragSource = null; // dropped nowhere
+      }
+      suppressRowClicksUntil = Date.now() + 800;
+    } else {
+      // Lifted but not dragged → open the context menu.
+      if (navigator.vibrate) { try { navigator.vibrate(15); } catch (err) { /* noop */ } }
+      openContextMenuAt(startX, startY, row);
+      dragSource = null;
+      suppressRowClicksUntil = Date.now() + 800;
     }
   }, { passive: true });
 
-  el.addEventListener('touchend', clear);
-  el.addEventListener('touchcancel', clear);
+  row.addEventListener('touchcancel', () => {
+    cleanup();
+    dragSource = null;
+    clearDropTargets();
+    clearAutoEnter();
+  });
 }
 
 // Capture-phase: right after a long-press, suppress the synthetic click when
@@ -826,18 +883,59 @@ function clearDropTargets() {
     .forEach(el => el.classList.remove('drop-target'));
 }
 
-function updateDropHighlight(e) {
+// Resolve the drop target under a client point (shared by the mouse dragover
+// path and the touch-drag path):
+// - a folder row → move into that folder;
+// - a breadcrumb ancestor link (never Home) → move into that folder;
+// - otherwise the blank area of the current directory (move into currentPath).
+function dropTargetFromPoint(x, y) {
+  const el = document.elementFromPoint(x, y);
+  if (!el || !el.closest) return { kind: 'none' };
+  const dirRow = el.closest('.file-row.dir');
+  if (dirRow && isValidDropTargetDir(dirRow.dataset.path)) {
+    return { kind: 'dir', path: dirRow.dataset.path, el: dirRow };
+  }
+  const navLink = el.closest('#path-nav a[data-path]');
+  if (navLink) {
+    const dest = navLink.dataset.path || '';
+    if (dest !== '' && isValidDropTargetDir(dest)) {
+      return { kind: 'dir', path: dest, el: navLink };
+    }
+  }
+  if (isValidDropTargetDir(currentPath)) {
+    return { kind: 'current', path: currentPath, el: null };
+  }
+  return { kind: 'none' };
+}
+
+// Highlight the current drop target (folder row / breadcrumb link, or the
+// blank area of the current directory).
+function applyTargetHighlight(t) {
   clearDropTargets();
-  const dirRow = e.target.closest ? e.target.closest('.file-row.dir') : null;
-  const dirPath = dirRow ? dirRow.dataset.path : null;
-  if (dirPath && isValidDropTargetDir(dirPath)) {
-    dirRow.classList.add('drop-target');
-  } else if (isValidDropTargetDir(currentPath)) {
-    // No folder row under the pointer: dropping on the blank area moves the
-    // item into the current directory (handy right after auto-entering it).
+  if (!t) return;
+  if (t.kind === 'dir' && t.el) {
+    t.el.classList.add('drop-target');
+  } else if (t.kind === 'current') {
     const list = document.getElementById('file-list');
     if (list) list.classList.add('drop-current');
   }
+}
+
+// Auto-enter: hovering a valid folder (a row or a breadcrumb link) for
+// AUTO_ENTER_MS navigates into it. Passing null cancels any pending timer.
+function armAutoEnter(path, el) {
+  if (path === hoverDirPath) return;
+  hoverDirPath = path;
+  clearTimeout(autoEnterTimer);
+  autoEnterTimer = null;
+  if (!path) return;
+  autoEnterTimer = setTimeout(() => {
+    autoEnterTimer = null;
+    if (dragSource && hoverDirPath === path && el && document.body.contains(el)) {
+      clearAutoEnter();
+      navigate(path);
+    }
+  }, AUTO_ENTER_MS);
 }
 
 function setupMoveDragDrop() {
@@ -855,48 +953,29 @@ function setupMoveDragDrop() {
   });
   document.addEventListener('mouseup', () => cancelDragHold());
 
-  el.addEventListener('dragenter', (e) => {
+  // Shared dragover: resolve the target under the pointer, highlight it and
+  // auto-enter folders when hovered. Used by the file list AND the breadcrumb.
+  const onDragOver = (e) => {
     if (!isInternalMove(e)) return;
-    e.preventDefault();
-    dropDepth++;
-    updateDropHighlight(e);
-  });
-
-  el.addEventListener('dragover', (e) => {
-    if (!isInternalMove(e)) return;
-    const dirRow = e.target.closest ? e.target.closest('.file-row.dir') : null;
-    const dirPath = dirRow ? dirRow.dataset.path : null;
-
-    // Auto-enter: hovering a new valid folder restarts the navigation timer.
-    if (dirPath !== hoverDirPath) {
-      hoverDirPath = dirPath;
-      clearTimeout(autoEnterTimer);
-      autoEnterTimer = null;
-      if (dirPath && isValidDropTargetDir(dirPath)) {
-        autoEnterTimer = setTimeout(() => {
-          autoEnterTimer = null;
-          if (dragSource && hoverDirPath === dirPath && document.body.contains(dirRow)) {
-            clearAutoEnter();
-            navigate(dirPath);
-          }
-        }, AUTO_ENTER_MS);
-      }
-    }
-
-    // Drop target: a folder row under the pointer, else the blank area of
-    // the current directory (isValidDropTargetDir also rejects the source's
-    // own folder/children).
-    const targetable = dirPath
-      ? isValidDropTargetDir(dirPath)
-      : isValidDropTargetDir(currentPath);
-    if (!targetable) {
+    const t = dropTargetFromPoint(e.clientX, e.clientY);
+    armAutoEnter(t.kind === 'dir' ? t.path : null, t.el);
+    if (t.kind === 'none') {
       clearDropTargets();
       return;
     }
     e.preventDefault();
     if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
-    updateDropHighlight(e);
+    applyTargetHighlight(t);
+  };
+
+  el.addEventListener('dragenter', (e) => {
+    if (!isInternalMove(e)) return;
+    e.preventDefault();
+    dropDepth++;
+    applyTargetHighlight(dropTargetFromPoint(e.clientX, e.clientY));
   });
+
+  el.addEventListener('dragover', onDragOver);
 
   el.addEventListener('dragleave', (e) => {
     if (!isInternalMove(e)) return;
@@ -913,41 +992,25 @@ function setupMoveDragDrop() {
   el.addEventListener('drop', (e) => {
     dropDepth = 0;
     if (!isInternalMove(e)) return;
-    const dirRow = e.target.closest ? e.target.closest('.file-row.dir') : null;
+    const t = dropTargetFromPoint(e.clientX, e.clientY);
     clearDropTargets();
     clearAutoEnter();
-    if (dirRow) {
-      const destDir = dirRow.dataset.path;
-      if (!isValidDropTargetDir(destDir)) return; // folder onto itself/its child
-      e.preventDefault();
-      e.stopPropagation();
-      performMove(destDir);
-    } else if (isValidDropTargetDir(currentPath)) {
-      // Dropped on the blank area: move into the current directory (e.g.
-      // right after auto-entering it). Same-location drops are a no-op.
-      e.preventDefault();
-      e.stopPropagation();
-      performMove(currentPath);
-    }
+    if (t.kind === 'none') return; // folder onto itself/its child, or nothing
+    e.preventDefault();
+    e.stopPropagation();
+    performMove(t.path);
   });
 
   // Breadcrumb path nav: dragging onto an ancestor link moves into that
-  // folder. "Home" (data-path="") is never a valid target.
+  // folder, and hovering one auto-enters it too. "Home" (data-path="") is
+  // never a target — dropTargetFromPoint rejects it.
   const nav = document.getElementById('path-nav');
   if (nav) {
     nav.addEventListener('dragenter', (e) => {
       if (!isInternalMove(e)) return;
       e.preventDefault();
     });
-    nav.addEventListener('dragover', (e) => {
-      if (!isInternalMove(e)) return;
-      const link = getNavTarget(e);
-      clearDropTargets();
-      if (!link) return;
-      e.preventDefault();
-      if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
-      link.classList.add('drop-target');
-    });
+    nav.addEventListener('dragover', onDragOver);
     nav.addEventListener('dragleave', (e) => {
       if (!isInternalMove(e)) return;
       if (e.relatedTarget && nav.contains(e.relatedTarget)) return;
@@ -956,25 +1019,15 @@ function setupMoveDragDrop() {
     });
     nav.addEventListener('drop', (e) => {
       if (!isInternalMove(e)) return;
-      const link = getNavTarget(e);
+      const t = dropTargetFromPoint(e.clientX, e.clientY);
       clearDropTargets();
       clearAutoEnter();
-      if (!link) return;
+      if (t.kind === 'none') return;
       e.preventDefault();
       e.stopPropagation();
-      performMove(link.dataset.path);
+      performMove(t.path);
     });
   }
-}
-
-// The ancestor breadcrumb link under the pointer that is a legal drop target,
-// or null (also rejects "Home" — data-path="" — and same/self destinations).
-function getNavTarget(e) {
-  const a = e.target.closest ? e.target.closest('#path-nav a[data-path]') : null;
-  if (!a) return null;
-  const dest = a.dataset.path || '';
-  if (dest === '' || !isValidDropTargetDir(dest)) return null;
-  return a;
 }
 
 async function performMove(destDir) {

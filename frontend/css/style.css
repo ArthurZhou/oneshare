@@ -18,6 +18,7 @@
   --row-hover: #f2f2f2;
   --selection: #1a1a1a;
   --selection-text: #ffffff;
+  --drop-highlight: #c9c9c9;
   --shadow: rgba(0, 0, 0, 0.18);
 }
 
@@ -37,6 +38,7 @@
     --row-hover: #1e1e1e;
     --selection: #eeeeee;
     --selection-text: #121212;
+    --drop-highlight: #333333;
     --shadow: rgba(0, 0, 0, 0.5);
   }
 }
@@ -205,10 +207,10 @@ a:hover {
 }
 
 /* Drag & drop move: a breadcrumb ancestor link being hovered as a drop
-   target (Home is never a target). Solid line + secondary-bg, matching the
-   design language instead of a dashed outline. */
+   target (Home is never a target). Solid line + a brighter-than-panel fill,
+   so it stands out without hiding the text. */
 .path-nav a.drop-target {
-  background: var(--secondary-bg);
+  background: var(--drop-highlight);
   outline: 1px solid var(--line);
   outline-offset: 0;
 }
@@ -411,9 +413,10 @@ a:hover {
 }
 
 .file-row.drop-target {
-  /* Crisp solid line + subtle secondary-bg fill (same tone as hover/panels),
-     so the row text is never obscured and it matches the design language. */
-  background: var(--secondary-bg);
+  /* Crisp solid line + a clearly-visible fill (brighter than the panel tone
+     but not the text color), so the drop target stands out while the row
+     text stays readable in both themes. */
+  background: var(--drop-highlight);
   outline: 1px solid var(--line);
   outline-offset: -1px;
 }
@@ -421,7 +424,7 @@ a:hover {
 /* Blank-area drop target: dropping on the list's empty space moves the item
    into the current directory. */
 .file-list.drop-current {
-  background: var(--secondary-bg);
+  background: var(--drop-highlight);
   outline: 1px solid var(--line);
   outline-offset: -1px;
 }
