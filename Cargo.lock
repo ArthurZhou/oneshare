@@ -381,7 +381,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -934,9 +934,9 @@ checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
 
 [[package]]
 name = "libfw-core"
-version = "0.2.4"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a5726b2c7f0d90e5a667fb30edb9ea6a59e991fd89505c6a619892e1b6a0fa61"
+checksum = "40e06b88752f4e62f0dd9c3155a8be604c5509fb5c0d9c35fa35a351b9cc826b"
 dependencies = [
  "async-trait",
  "crc32fast",
@@ -949,9 +949,9 @@ dependencies = [
 
 [[package]]
 name = "libfw-server"
-version = "0.2.4"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8e4ed56309cd83ff1d900abec9460fdb86577166572c12c22f35e8318c685388"
+checksum = "a0bf7b5f79ab667aa319bdead453f8a9ddaafa918200beab9f0d7fac986350c7"
 dependencies = [
  "async-trait",
  "axum",
@@ -1082,7 +1082,7 @@ checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 
 [[package]]
 name = "oneshare"
-version = "0.1.13"
+version = "0.1.14"
 dependencies = [
  "axum",
  "axum-extra",
@@ -1439,7 +1439,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2287,7 +2287,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

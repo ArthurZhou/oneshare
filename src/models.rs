@@ -81,11 +81,6 @@ pub struct AddUserToGroupRequest {
 pub struct TokenResponse {
     pub token: String,
     pub expires_in: u64,
-    /// The real filesystem path the token is bound to. libfw 0.2.0 moves
-    /// transfers onto WebSocket, where the SDK sends the path it is given, so
-    /// the frontend needs the real path to drive transfers (the token is
-    /// already bound to this real path; PathValidator allows its subpaths).
-    pub real_path: String,
 }
 
 #[derive(Debug, Serialize)]

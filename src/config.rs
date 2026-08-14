@@ -50,17 +50,17 @@ pub struct LibfwConfig {
     /// Client SDK: backoff ceiling (ms, default 30 s).
     #[serde(default = "default_max_retry_delay_ms")]
     pub max_retry_delay_ms: u64,
-    /// Client SDK: WebSocket per-read (idle) timeout in ms (default 10 min).
+    /// Client SDK: per-read (idle) timeout in ms (default 10 min).
     ///
     /// The libfw engine applies this as a PER-READ timeout on the transfer
-    /// socket: `WsConnection::next()` races every frame read against a
-    /// `setTimeout` and ABORTS the whole transfer if a single read stalls
-    /// longer than this. It is NOT a total-transfer deadline and it does not
-    /// reset on activity within a read. A small value (e.g. the old 60 s
-    /// default) therefore kills otherwise-healthy transfers on slow links,
-    /// large uploads (server commit) and high-latency wave reconciliations,
-    /// so it must be generous. `0` disables the JS timer (the browser's own
-    /// socket error/close still surfaces a truly dead peer).
+    /// socket/HTTP response: it races every read against a `setTimeout` and
+    /// ABORTS the whole transfer if a single read stalls longer than this. It
+    /// is NOT a total-transfer deadline and it does not reset on activity
+    /// within a read. A small value (e.g. the old 60 s default) therefore
+    /// kills otherwise-healthy transfers on slow links, large uploads (server
+    /// commit) and high-latency reconciliation, so it must be generous. `0`
+    /// disables the JS timer (the browser's own socket/network error/close
+    /// still surfaces a truly dead peer).
     #[serde(default = "default_timeout_ms")]
     pub timeout_ms: u64,
 }

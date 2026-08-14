@@ -262,11 +262,22 @@ where
         match dir_map {
             Some((real, disp)) => {
                 // Non-admin `/dir`: forward, then rewrite the listing body so
-                // real filesystem paths never reach the browser.
+                // real filesystem paths never reach the browser (and drop
+                // libfw's own session temps).
                 let fut = Box::pin(self.inner.call(req));
                 Box::pin(async move {
                     let resp = fut.await.expect("inner service is infallible");
                     Ok(rewrite_dir_response(resp, &real, &disp).await)
+                })
+            }
+            None if pfx == "/dir/" => {
+                // Admin / root-ACL `/dir`: paths are already real, no mapping
+                // needed — but still drop libfw's own session temp files so a
+                // folder download never pulls them in.
+                let fut = Box::pin(self.inner.call(req));
+                Box::pin(async move {
+                    let resp = fut.await.expect("inner service is infallible");
+                    Ok(rewrite_dir_response(resp, "", "").await)
                 })
             }
             None => Box::pin(self.inner.call(req)),
@@ -334,17 +345,29 @@ async fn rewrite_dir_response(
     let real = real_prefix.trim_matches('/');
     let disp = display_prefix.trim_matches('/');
     if let serde_json::Value::Array(entries) = &mut value {
-        for entry in entries.iter_mut() {
-            let Some(obj) = entry.as_object_mut() else { continue };
-            let Some(serde_json::Value::String(p)) = obj.get_mut("path") else {
+        let mut kept: Vec<serde_json::Value> = Vec::with_capacity(entries.len());
+        for entry in entries.drain(..) {
+            let mut obj = match entry {
+                serde_json::Value::Object(o) => o,
+                _ => continue,
+            };
+            let Some(serde_json::Value::String(p)) = obj.remove("path") else {
                 continue;
             };
-            let p = std::mem::take(p);
+            // Drop libfw's own upload-session temp files (`.libfw-sess-*`,
+            // `.libfw-tmp-*` and their `.blocks` sidecars): an interrupted
+            // upload leaves them behind, and a folder download must never
+            // pull them in. (The UI listing already skips hidden files.)
+            if p.rsplit('/').next().unwrap_or("").starts_with(".libfw-") {
+                continue;
+            }
             obj.insert(
                 "path".to_string(),
                 serde_json::Value::String(map_listing_path(&p, real, disp)),
             );
+            kept.push(serde_json::Value::Object(obj));
         }
+        *entries = kept;
     }
 
     // The body changed, so any old Content-Length is stale.
@@ -570,6 +593,32 @@ async fn main() {
         secure_cookies: config.server.session_cookie_secure,
     });
 
+    // libfw 0.3.0's concurrent upload protocol leaves a `.libfw-sess-*` temp
+    // (plus a `.blocks` sidecar) behind whenever a browser dies mid-upload;
+    // sweep abandoned ones periodically so they don't accumulate on disk.
+    // `cleanup_stale_sessions` only removes temps whose last write is older
+    // than `max_age` — never committed user files.
+    {
+        let storage = libfw_state.storage.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(60 * 60));
+            // Skip the immediate first tick so the first sweep is a full
+            // interval later.
+            tick.tick().await;
+            loop {
+                tick.tick().await;
+                match storage
+                    .cleanup_stale_sessions(std::time::Duration::from_secs(24 * 60 * 60))
+                    .await
+                {
+                    Ok(0) => {}
+                    Ok(n) => tracing::info!("cleaned {n} stale libfw upload-session temp(s)"),
+                    Err(e) => tracing::warn!("libfw session cleanup failed: {e}"),
+                }
+            }
+        });
+    }
+
     let libfw_app = libfw_router(libfw_state);
 
     // libfw file transfer routes (uses its own state, embedded via any_service).
@@ -579,12 +628,11 @@ async fn main() {
     // so real paths never leave the server; admin paths pass through.
     let file_service = VirtualTranslate::new(FreshPathParams::new(libfw_app.clone()), state.clone());
     let dir_service = VirtualTranslate::new(FreshPathParams::new(libfw_app.clone()), state.clone());
-    // libfw 0.2.0 moves ALL browser transfers (upload + download) onto the
-    // `/ws` WebSocket endpoint (a block-transfer protocol). The SDK connects
-    // with the bearer token and sends the REAL paths that token is bound to,
-    // so no virtual-path translation applies here — pass libfw's ws handler
-    // through untouched. The `/ws` route has no `{*path}` capture, so it needs
-    // no FreshPathParams either.
+    // libfw 0.3.0's browser SDK drives transfers over HTTP (`/file`, `/dir`),
+    // which go through VirtualTranslate above. The `/ws` WebSocket endpoint
+    // remains for raw clients and older builds, so keep it mounted with libfw's
+    // own handler. The `/ws` route has no `{*path}` capture, so it needs no
+    // FreshPathParams either.
     let ws_service = libfw_app;
 
     let mut app = Router::new()
