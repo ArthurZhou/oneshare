@@ -50,6 +50,10 @@ chunk_size = 2097152
 # 4 (same as concurrency) so uploads stay bounded; raise only if you want
 # deeper per-file pipelining.
 upload_window = 4
+# Same knob on the download side: parallel byte ranges fetched per file.
+# Defaults to 4 (the SDK's own downloadWindow default); without this the
+# frontend would silently use the SDK default instead of a configured value.
+download_window = 4
 max_retries = 3
 base_retry_delay_ms = 500
 max_retry_delay_ms = 30000

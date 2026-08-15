@@ -35,6 +35,12 @@
     uploadWindow: typeof served.uploadWindow === 'number'
       ? served.uploadWindow
       : (typeof served.concurrency === 'number' ? served.concurrency : 4),
+    // Download-side mirror of uploadWindow: parallel byte ranges (chunks)
+    // fetched per file. Fallback matches the SDK's own downloadWindow
+    // default, which is also the concurrency value.
+    downloadWindow: typeof served.downloadWindow === 'number'
+      ? served.downloadWindow
+      : (typeof served.concurrency === 'number' ? served.concurrency : 4),
     maxRetries: typeof served.maxRetries === 'number' ? served.maxRetries : 3,
     baseRetryDelayMs: typeof served.baseRetryDelayMs === 'number' ? served.baseRetryDelayMs : 500,
     maxRetryDelayMs: typeof served.maxRetryDelayMs === 'number' ? served.maxRetryDelayMs : 30000,
@@ -137,6 +143,7 @@
           chunkSize: opts.chunkSize,
           downloadChunkSize: opts.chunkSize,
           uploadWindow: opts.uploadWindow,
+          downloadWindow: opts.downloadWindow,
           maxRetries: opts.maxRetries,
           baseRetryDelayMs: opts.baseRetryDelayMs,
           maxRetryDelayMs: opts.maxRetryDelayMs,

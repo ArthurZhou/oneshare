@@ -49,6 +49,12 @@ pub struct LibfwConfig {
     /// looks on the network panel. Raise it for deeper per-file pipelining.
     #[serde(default = "default_upload_window")]
     pub upload_window: u32,
+    /// Client SDK: per-file download scheduling window — how many byte
+    /// ranges of the same file may be fetched in parallel (default 4, the
+    /// SDK's own default). Mirror of `upload_window` on the download side;
+    /// without this knob the frontend would silently use the SDK default.
+    #[serde(default = "default_download_window")]
+    pub download_window: u32,
     /// Client SDK: retries per chunk/file before failing (default 3).
     #[serde(default = "default_max_retries")]
     pub max_retries: u32,
@@ -81,6 +87,7 @@ impl Default for LibfwConfig {
             concurrency: default_concurrency(),
             chunk_size: default_chunk_size(),
             upload_window: default_upload_window(),
+            download_window: default_download_window(),
             max_retries: default_max_retries(),
             base_retry_delay_ms: default_base_retry_delay_ms(),
             max_retry_delay_ms: default_max_retry_delay_ms(),
@@ -103,6 +110,9 @@ fn default_chunk_size() -> u64 {
 }
 fn default_upload_window() -> u32 {
     4 // matches default concurrency, so uploads stay bounded
+}
+fn default_download_window() -> u32 {
+    4 // matches the libfw-client SDK's own downloadWindow default
 }
 fn default_max_retries() -> u32 {
     3
