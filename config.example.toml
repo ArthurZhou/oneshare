@@ -41,7 +41,15 @@ compression = "none"
 max_upload_size = 107374182400
 # Client SDK options (defaults shown).
 concurrency = 4
+# One knob controls EVERY chunk size: this single value is used for upload
+# chunks AND download byte ranges (downloadChunkSize is set to this in the
+# frontend, instead of the SDK's default 256 KiB download chunks).
 chunk_size = 2097152
+# Per-file scheduling window: parallel chunks in flight for one file.
+# Total in-flight upload requests ≈ concurrency × upload_window. Defaults to
+# 4 (same as concurrency) so uploads stay bounded; raise only if you want
+# deeper per-file pipelining.
+upload_window = 4
 max_retries = 3
 base_retry_delay_ms = 500
 max_retry_delay_ms = 30000

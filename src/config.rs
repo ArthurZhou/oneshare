@@ -41,6 +41,14 @@ pub struct LibfwConfig {
     /// Client SDK: upload chunk size in bytes (default 2 MiB).
     #[serde(default = "default_chunk_size")]
     pub chunk_size: u64,
+    /// Client SDK: per-file scheduling window — how many chunks of the same
+    /// file may be in flight at once (default 4, matching concurrency).
+    ///
+    /// Total in-flight upload requests ≈ `concurrency × upload_window`, so
+    /// keeping this at the concurrency value bounds how "wild" an upload
+    /// looks on the network panel. Raise it for deeper per-file pipelining.
+    #[serde(default = "default_upload_window")]
+    pub upload_window: u32,
     /// Client SDK: retries per chunk/file before failing (default 3).
     #[serde(default = "default_max_retries")]
     pub max_retries: u32,
@@ -72,6 +80,7 @@ impl Default for LibfwConfig {
             max_upload_size: default_max_upload_size(),
             concurrency: default_concurrency(),
             chunk_size: default_chunk_size(),
+            upload_window: default_upload_window(),
             max_retries: default_max_retries(),
             base_retry_delay_ms: default_base_retry_delay_ms(),
             max_retry_delay_ms: default_max_retry_delay_ms(),
@@ -91,6 +100,9 @@ fn default_concurrency() -> u32 {
 }
 fn default_chunk_size() -> u64 {
     2 * 1024 * 1024 // 2 MiB
+}
+fn default_upload_window() -> u32 {
+    4 // matches default concurrency, so uploads stay bounded
 }
 fn default_max_retries() -> u32 {
     3

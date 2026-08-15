@@ -29,6 +29,12 @@
     compress: served.compress !== false,
     concurrency: typeof served.concurrency === 'number' ? served.concurrency : 4,
     chunkSize: typeof served.chunkSize === 'number' ? served.chunkSize : 2 * 1024 * 1024,
+    // Per-file scheduling window (parallel chunks in flight per file).
+    // Total in-flight chunks ≈ concurrency × uploadWindow; defaults to
+    // concurrency so uploads stay bounded by the configured knob.
+    uploadWindow: typeof served.uploadWindow === 'number'
+      ? served.uploadWindow
+      : (typeof served.concurrency === 'number' ? served.concurrency : 4),
     maxRetries: typeof served.maxRetries === 'number' ? served.maxRetries : 3,
     baseRetryDelayMs: typeof served.baseRetryDelayMs === 'number' ? served.baseRetryDelayMs : 500,
     maxRetryDelayMs: typeof served.maxRetryDelayMs === 'number' ? served.maxRetryDelayMs : 30000,
@@ -125,7 +131,12 @@
           baseUrl: base,
           concurrency: opts.concurrency,
           compress: opts.compress,
+          // One knob controls every chunk size: upload chunks AND download
+          // byte ranges both use `chunk_size` (otherwise the SDK falls back
+          // to its own 256 KiB download default).
           chunkSize: opts.chunkSize,
+          downloadChunkSize: opts.chunkSize,
+          uploadWindow: opts.uploadWindow,
           maxRetries: opts.maxRetries,
           baseRetryDelayMs: opts.baseRetryDelayMs,
           maxRetryDelayMs: opts.maxRetryDelayMs,

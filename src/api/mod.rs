@@ -29,6 +29,7 @@ pub async fn config_js(State(state): State<Arc<AppState>>) -> impl IntoResponse 
         "compress": libfw.compression_format() == CompressionFormat::Zrip,
         "concurrency": libfw.concurrency,
         "chunkSize": libfw.chunk_size,
+        "uploadWindow": libfw.upload_window,
         "maxRetries": libfw.max_retries,
         "baseRetryDelayMs": libfw.base_retry_delay_ms,
         "maxRetryDelayMs": libfw.max_retry_delay_ms,
