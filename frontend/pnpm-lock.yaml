@@ -9,8 +9,8 @@ importers:
   .:
     dependencies:
       libfw-client:
-        specifier: 0.3.0
-        version: 0.3.0
+        specifier: 0.3.2
+        version: 0.3.2
     devDependencies:
       esbuild:
         specifier: ^0.28.0
@@ -397,8 +397,8 @@ packages:
     engines: {node: ^14.13.1 || >=16.0.0}
     hasBin: true
 
-  libfw-client@0.3.0:
-    resolution: {integrity: sha512-b+lD2vc+G/I/aCdRaO/jTW/J2tJRsmved5bPOUGWE1bmzvDLnBoE/PaCwbyo6nXNg4fLaZlV0CghDIIGelYOVw==}
+  libfw-client@0.3.2:
+    resolution: {integrity: sha512-sy4xT5x0BWfe5aXAQnTer1yPtj7PgI2aFEvyankj50G8bROSOjTwhomauj+WFK4yUp7KnJy1XnFLXJ81j5H4cw==}
 
   lower-case@2.0.2:
     resolution: {integrity: sha512-7fm3l3NAF9WfN6W3JOmf5drwpVqX78JtoGJ3A6W0a6ZnldM41w2fV5D490psKFTpMds8TJse/eHLFFsNHHjHgg==}
@@ -752,7 +752,7 @@ snapshots:
       relateurl: 0.2.7
       terser: 5.49.2
 
-  libfw-client@0.3.0: {}
+  libfw-client@0.3.2: {}
 
   lower-case@2.0.2:
     dependencies:
