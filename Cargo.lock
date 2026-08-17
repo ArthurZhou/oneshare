@@ -906,9 +906,9 @@ checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
 
 [[package]]
 name = "libfw-core"
-version = "0.3.4"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "01f66169619648a020a7f80724d65e2c0b17e1188256ae1ee9eb306c716d38a2"
+checksum = "53421ca894190285d89ebb60d62bcc1c864c683050f3b8dc6a59bdd613df6478"
 dependencies = [
  "aes-gcm",
  "async-trait",
@@ -923,9 +923,9 @@ dependencies = [
 
 [[package]]
 name = "libfw-server"
-version = "0.3.4"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9196d1cacc1f848b8733d8fb7e75882f7fbc562be7cc1f83bfc9753450d9e744"
+checksum = "182254986c81795394ad5e4821b5459304d25c5324bc96efa8fee82c14962eb9"
 dependencies = [
  "async-trait",
  "axum",
