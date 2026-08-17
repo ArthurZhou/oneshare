@@ -33,6 +33,15 @@ redirect_uri = "http://localhost:3456/auth/callback"
 # client knobs are served to the browser via /config.js (window.ONESHARE_LIBFW)
 # so the frontend configures the libfw-client SDK from this file.
 [libfw]
+# REQUIRED: 64-hex (32-byte) AES-256 key for libfw's EncryptedPathCodec.
+# Real storage paths are encrypted into opaque `v1.<base64url>` shadow paths
+# before anything reaches the browser — bearer tokens, `/file`/`/dir` URLs,
+# directory listings, upload echoes — so no real filesystem path ever leaves
+# the server. Generate with: openssl rand -hex 32
+# Keep it stable across restarts; rotating it invalidates outstanding tokens
+# (they expire within the 1h TTL anyway). The server refuses to start
+# without it.
+path_key = "<openssl rand -hex 32>"
 # Download compression served by the embedded server: "none" (default, safe
 # for plain browser fetches) or "zrip" (the SDK can decompress it). The SDK's
 # compress flag mirrors this.

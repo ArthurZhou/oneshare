@@ -92,6 +92,18 @@ pub struct LibfwConfig {
     /// with `auto_tune = true`.
     #[serde(default = "default_tune_ttl_ms")]
     pub tune_ttl_ms: u64,
+    /// AES-256 key (64 hex chars = 32 bytes) for libfw's `EncryptedPathCodec`.
+    ///
+    /// Required: real storage paths are encrypted into opaque
+    /// `v1.<base64url>` shadow paths before anything reaches the browser
+    /// (bearer tokens, `/file`/`/dir` URLs, directory listings, upload
+    /// echoes), so no real filesystem path ever leaves the server. The
+    /// server refuses to start without a valid key. Generate with
+    /// `openssl rand -hex 32`; keep it stable across restarts (rotating it
+    /// invalidates outstanding tokens, which expire within the 1 h TTL
+    /// anyway).
+    #[serde(default)]
+    pub path_key: String,
 }
 
 impl Default for LibfwConfig {
@@ -109,6 +121,7 @@ impl Default for LibfwConfig {
             timeout_ms: default_timeout_ms(),
             auto_tune: false,
             tune_ttl_ms: default_tune_ttl_ms(),
+            path_key: String::new(),
         }
     }
 }
@@ -152,6 +165,17 @@ impl LibfwConfig {
     /// header. Anything other than `zrip`/`zstd` falls back to `None`.
     pub fn compression_format(&self) -> CompressionFormat {
         CompressionFormat::parse_header(&self.compression).unwrap_or(CompressionFormat::None)
+    }
+
+    /// Build libfw's `EncryptedPathCodec` from `path_key`.
+    ///
+    /// Fails (rather than silently falling back to identity) when the key is
+    /// missing or malformed: an identity fallback would start leaking real
+    /// paths to the browser, which is exactly what this codec exists to
+    /// prevent.
+    pub fn path_codec(&self) -> Result<libfw_core::pathmap::EncryptedPathCodec, String> {
+        libfw_core::pathmap::EncryptedPathCodec::from_hex(&self.path_key)
+            .map_err(|e| format!("[libfw] path_key: {e}"))
     }
 }
 

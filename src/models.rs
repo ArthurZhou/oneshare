@@ -81,6 +81,10 @@ pub struct AddUserToGroupRequest {
 pub struct TokenResponse {
     pub token: String,
     pub expires_in: u64,
+    /// The opaque shadow path (`v1.…`) this token is bound to. Transfer
+    /// requests (`/file/{path}`, `/dir/{path}`) must use it; the real path
+    /// never leaves the server.
+    pub path: String,
 }
 
 #[derive(Debug, Serialize)]

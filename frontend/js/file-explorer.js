@@ -482,10 +482,11 @@ function renderTransfers() {
 //
 // Uploads go through the libfw-client SDK, which handles chunking, zstd
 // compression and x-libfw-offset resume itself. The SDK builds `/file/{path}`
-// from each plan entry, so the wrapper prefixes every relative path with the
-// current (display) directory and the server's token binds the real target.
-// Resume state is persisted per path in IndexedDB by the SDK, so a re-run
-// continues from where an interrupted upload stopped.
+// from each plan entry, so the wrapper mints a per-file opaque shadow (via
+// `/api/files/token`) at planning time and the server's token binds the real
+// target. Resume state is persisted per path in IndexedDB by the SDK; the
+// shadow cache keeps retries of the same file on the same shadow so an
+// interrupted upload can continue.
 // Refresh the listing shortly after an upload finishes, debounced so a batch
 // of concurrent uploads only triggers one reload.
 let uploadRefreshTimer = null;
@@ -512,11 +513,14 @@ async function handleUpload(input) {
     return;
   }
 
-  // One write token for the destination; the server binds it to the real
-  // directory path. Since libfw 0.3.0 transfers over HTTP (`/file`, `/dir`),
-  // the SDK POSTs the DISPLAY path we give it and OneShare's VirtualTranslate
-  // middleware resolves it to the real path server-side — so the client only
-  // ever sends (and sees) virtual paths.
+  // One write token for the destination; the server binds it to an opaque
+  // shadow of the real directory path. Since libfw 0.3.4 transfers over HTTP
+  // (`/file`, `/dir`), the SDK POSTs per-file shadows (minted at planning
+  // time by the wrapper) and the embedded server decrypts them to the real
+  // paths — so the client only ever sends (and sees) `v1.…` shadows, never
+  // real paths. This directory token covers the whole subtree and is the
+  // token the SDK actually sends; fetching it up front also fails fast when
+  // the user cannot write here.
   let token;
   try {
     const resp = await API.getToken(destPath || '/', 'write');
@@ -584,7 +588,10 @@ function downloadFile(path, name) {
     const t = { kind: 'download', name, total: 0, done: 0, status: 'active', error: null };
     addTransfer(t);
     t.cancel = () => Libfw.cancel();
-    t.run = () => runFileDownloadTask(t, path, name, tokenResp.token);
+    // The SDK builds `/file/{path}` from the path we give it, which must be
+    // the opaque shadow bound to the token (`tokenResp.path`) — the display
+    // path we sent would fail the server's codec decode.
+    t.run = () => runFileDownloadTask(t, tokenResp.path, name, tokenResp.token);
     t.run();
   })().catch(e => alert('Download denied: ' + e.message));
 }
@@ -604,9 +611,10 @@ async function runFileDownloadTask(t, path, name, token) {
     };
     // libfw-client 0.3.0 saves the file itself (streamed into a user-picked
     // directory via FS API, or via a traditional browser download). The SDK
-    // sends the DISPLAY path we give it over HTTP; VirtualTranslate resolves
-    // it to the real path the token is bound to.
-    const done = await Libfw.downloadFile(token, path, progress);
+    // sends the opaque shadow path over HTTP; the embedded server decodes it
+    // to the real path the token is bound to. `name` is the display leaf
+    // name the file is saved under — the shadow would be a useless filename.
+    const done = await Libfw.downloadFile(token, path, name, progress);
     updateTransfer(t.id, { status: 'done', done, finalizing: false });
     setTimeout(() => removeTransfer(t.id), 3000);
   } catch (e) {
@@ -624,7 +632,9 @@ function downloadFolder(path, name) {
     const t = { kind: 'download', name, total: 0, done: 0, status: 'active', error: null };
     addTransfer(t);
     t.cancel = () => Libfw.cancel();
-    t.run = () => runFolderDownloadTask(t, path, name, tokenResp.token);
+    // Same as single files: the SDK walks `/dir/{path}` from this path, so
+    // it must be the opaque shadow, not the display path we sent.
+    t.run = () => runFolderDownloadTask(t, tokenResp.path, name, tokenResp.token);
     t.run();
   })().catch(e => alert('Download denied: ' + e.message));
 }
@@ -637,9 +647,9 @@ async function runFolderDownloadTask(t, path, name, token) {
   try {
     // libfw-client 0.3.0 downloads the whole tree itself over HTTP
     // (streamed into a user-picked directory via FS API, or packed into a
-    // `.zip` and saved via a normal browser download). It sends the DISPLAY
-    // path we give it; VirtualTranslate resolves it to the real root path
-    // the token is bound to.
+    // `.zip` and saved via a normal browser download). It sends the opaque
+    // shadow path; the embedded server decodes it to the real root path the
+    // token is bound to, and every listed child comes back as a shadow too.
     const bytes = await Libfw.downloadFolder(token, path, (ev) => {
       if (ev.type === 'progress') updateTransfer(t.id, {
         done: ev.done,

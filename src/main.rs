@@ -11,14 +11,14 @@ use crate::auth::oidc::OidcClient;
 use crate::auth::session::SessionManager;
 use crate::config::Config;
 use crate::db::Database;
-use crate::libtoken::OneshareTokenVerifier;
+use crate::libtoken::{CodecPathValidator, OneshareTokenVerifier};
 use axum::{
     body::Body,
     http::{HeaderValue, Request, Response, StatusCode, Uri},
     routing::{any_service, delete, get, post, put},
     Router,
 };
-use libfw_core::auth::PathValidator;
+use libfw_core::pathmap::PathCodec;
 use libfw_server::{router as libfw_router, FsStorage, ServerState};
 use std::collections::HashMap;
 use std::convert::Infallible;
@@ -50,6 +50,10 @@ pub struct AppState {
     pub hmac_key: String,
     /// Whether the session cookie should be marked `Secure` (HTTPS-only).
     pub secure_cookies: bool,
+    /// libfw's encrypted path codec: real storage paths ↔ opaque `v1.…`
+    /// shadow paths. The token endpoint uses it to bind tokens to shadows
+    /// (never real paths) and to decode shadow inputs from the client.
+    pub path_codec: Arc<dyn PathCodec>,
 }
 
 /// Forward a request to an inner service with a fresh (empty) extension map.
@@ -91,29 +95,27 @@ where
     }
 }
 
-/// Translates the Samba-style virtual paths on `/file/*` and `/dir/*` into the
-/// real paths the embedded libfw router serves, so non-admin users never send
-/// (or receive) real filesystem paths. ACLs are still evaluated on real paths
-/// server-side.
+/// Filter that drops libfw's own upload-session temps from `/dir` listings.
 ///
-/// The bearer token's `sub` identifies the user; their ACL shares resolve the
-/// virtual request path. The token itself is bound to the real path (issued by
-/// `/api/files/token`), so libfw's own path-permission check still gates the
-/// real path afterwards. Admin users are unaffected — they browse the real
-/// tree, so their paths pass through unchanged.
+/// An interrupted upload leaves a `.libfw-sess-*` temp (and its `.blocks`
+/// sidecar) behind; a folder download must never pull a half-written temp
+/// in. With `EncryptedPathCodec` the listed paths are opaque `v1.…` shadows,
+/// so they can no longer be recognized by name after encoding — this filter
+/// decodes each entry back to its real path and drops `.libfw-*` names.
+/// Everything else (including the shadow paths) passes through untouched.
 #[derive(Clone)]
-struct VirtualTranslate<S> {
+struct DirListingFilter<S> {
     inner: S,
-    state: Arc<AppState>,
+    codec: Arc<dyn PathCodec>,
 }
 
-impl<S> VirtualTranslate<S> {
-    fn new(inner: S, state: Arc<AppState>) -> Self {
-        Self { inner, state }
+impl<S> DirListingFilter<S> {
+    fn new(inner: S, codec: Arc<dyn PathCodec>) -> Self {
+        Self { inner, codec }
     }
 }
 
-impl<S, B> Service<Request<B>> for VirtualTranslate<S>
+impl<S, B> Service<Request<B>> for DirListingFilter<S>
 where
     S: Service<Request<B>, Response = Response<Body>, Error = Infallible> + Clone + Send + 'static,
     S::Future: Send + 'static,
@@ -127,183 +129,23 @@ where
         self.inner.poll_ready(cx)
     }
 
-    fn call(&mut self, mut req: Request<B>) -> Self::Future {
-        let path = req.uri().path().to_owned();
-        let prefix = path
-            .strip_prefix("/file/")
-            .map(|rest| ("/file/", rest))
-            .or_else(|| path.strip_prefix("/dir/").map(|rest| ("/dir/", rest)));
-
-        let Some((pfx, virt)) = prefix else {
-            return Box::pin(self.inner.call(req));
-        };
-
-        let token = req
-            .headers()
-            .get(axum::http::header::AUTHORIZATION)
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.strip_prefix("Bearer "))
-            .map(|t| t.to_string());
-
-        let Some(token) = token else {
-            // No token: let libfw answer 401/403 itself.
-            return Box::pin(self.inner.call(req));
-        };
-
-        // The frontend percent-encodes path segments (e.g. `%2F` for the slash
-        // inside `private/name`), so the captured `virt` may still be encoded.
-        // Decode it before resolving, and re-encode the real path afterwards.
-        use percent_encoding::{percent_decode_str, utf8_percent_encode, NON_ALPHANUMERIC};
-        let virt_decoded = percent_decode_str(virt)
-            .decode_utf8_lossy()
-            .into_owned();
-
-        // Compute the rewritten path (None = leave unchanged). For `/dir`
-        // requests from non-admins we also record the real→display mapping so
-        // the listing response can be rewritten back to display paths (the
-        // browser SDK walks `/dir` and re-fetches each listed path, so they
-        // must stay virtual).
-        let mut dir_map: Option<(String, String)> = None; // (real_prefix, display_prefix)
-        let rewrite: Option<String> = match crate::libtoken::verify_token(&self.state.hmac_key, &token)
-        {
-            Err(_) => None, // invalid/expired: let libfw answer 401
-            Ok(payload) => {
-                let uid: i64 = match payload.sub.parse() {
-                    Ok(uid) => uid,
-                    Err(_) => return Box::pin(self.inner.call(req)),
-                };
-                // Resolve the token's subject to (user, effective groups). A
-                // guest token (sub = GUEST_USER_ID, issued for unauthenticated
-                // sessions) maps to the synthetic guest user, whose permissions
-                // come from the reserved `guest` group — the exact same identity
-                // `/api/files/token` used when it issued the token.
-                let guest_user = crate::auth::session::guest_user();
-                let guest_groups = self
-                    .state
-                    .db
-                    .get_guest_group_id()
-                    .ok()
-                    .flatten()
-                    .map(|id| vec![id])
-                    .unwrap_or_default();
-                let (user, groups) =
-                    match self.state.db.get_user_by_id(uid).ok().flatten() {
-                        Some(u) => {
-                            let groups = self
-                                .state
-                                .db
-                                .get_effective_groups(u.id)
-                                .ok()
-                                .unwrap_or_default();
-                            (u, groups)
-                        }
-                        None if uid == crate::auth::session::GUEST_USER_ID => {
-                            (guest_user, guest_groups)
-                        }
-                        None => return Box::pin(self.inner.call(req)),
-                    };
-                let Some(entries) = self.state.db.list_acl_entries().ok() else {
-                    return Box::pin(self.inner.call(req));
-                };
-                if crate::api::files::sees_real_tree(&user, &groups, &entries) {
-                    // Admin / root-ACL holder browses the real tree: the path is
-                    // already real, no translation.
-                    None
-                } else {
-                    let shares = crate::acl::user_shares(&user, &groups, &entries);
-                    match crate::acl::resolve_virtual(&virt_decoded, &shares) {
-                        Some(real) => {
-                            // Encode each segment (keeping `/` as separator) so
-                            // the rewritten URI survives axum's Path decode and
-                            // non-ASCII names round-trip correctly.
-                            let encoded = real
-                                .split('/')
-                                .map(|seg| utf8_percent_encode(seg, NON_ALPHANUMERIC).to_string())
-                                .collect::<Vec<_>>()
-                                .join("/");
-                            if pfx == "/dir/" {
-                                dir_map = Some((real.clone(), virt_decoded.clone()));
-                            }
-                            Some(format!("{}{}", pfx, encoded))
-                        }
-                        None => {
-                            // Not a reachable share: 404 instead of letting a
-                            // virtual path reach libfw/FsStorage.
-                            return Box::pin(async {
-                                Ok(Response::builder()
-                                    .status(StatusCode::NOT_FOUND)
-                                    .body(Body::empty())
-                                    .unwrap())
-                            });
-                        }
-                    }
-                }
-            }
-        };
-
-        if let Some(new_path) = rewrite {
-            let uri = req.uri().clone();
-            let mut parts = uri.clone().into_parts();
-            let path_and_query = match uri.path_and_query() {
-                Some(pq) => match pq.query() {
-                    Some(q) if !q.is_empty() => format!("{new_path}?{q}"),
-                    _ => new_path.clone(),
-                },
-                None => new_path.clone(),
-            };
-            parts.path_and_query = Some(
-                path_and_query
-                    .parse()
-                    .expect("rewritten path is a valid path-and-query"),
-            );
-            *req.uri_mut() = Uri::from_parts(parts).expect("valid rewritten uri");
-        }
-
-        match dir_map {
-            Some((real, disp)) => {
-                // Non-admin `/dir`: forward, then rewrite the listing body so
-                // real filesystem paths never reach the browser (and drop
-                // libfw's own session temps).
-                let fut = Box::pin(self.inner.call(req));
-                Box::pin(async move {
-                    let resp = fut.await.expect("inner service is infallible");
-                    Ok(rewrite_dir_response(resp, &real, &disp).await)
-                })
-            }
-            None if pfx == "/dir/" => {
-                // Admin / root-ACL `/dir`: paths are already real, no mapping
-                // needed — but still drop libfw's own session temp files so a
-                // folder download never pulls them in.
-                let fut = Box::pin(self.inner.call(req));
-                Box::pin(async move {
-                    let resp = fut.await.expect("inner service is infallible");
-                    Ok(rewrite_dir_response(resp, "", "").await)
-                })
-            }
-            None => Box::pin(self.inner.call(req)),
-        }
+    fn call(&mut self, req: Request<B>) -> Self::Future {
+        let codec = self.codec.clone();
+        let fut = self.inner.call(req);
+        Box::pin(async move {
+            let response = fut.await.expect("inner service is infallible");
+            Ok(filter_dir_listing(response, codec).await)
+        })
     }
 }
 
-/// Rewrite the JSON directory-listing body returned by libfw so every entry
-/// `path` maps from the REAL prefix (under `root_dir`) back to the user's
-/// DISPLAY (virtual) path.
-///
-/// libfw's `FsStorage::list_dir` returns full paths relative to the mount
-/// root (e.g. `nested/public2/a.txt`), and the browser SDK walks `/dir`
-/// recursively and re-fetches each listed path through `/file/..` /
-/// `/dir/..`. Those follow-up requests must use virtual paths, so we map
-/// `nested/public2/a.txt` → `public2/a.txt` here, keeping real paths out of
-/// the browser exactly like every other API response.
-async fn rewrite_dir_response(
-    response: Response<Body>,
-    real_prefix: &str,
-    display_prefix: &str,
-) -> Response<Body> {
+/// Drop `.libfw-*` entries (upload-session temps and their `.blocks`
+/// sidecars) from a successful JSON `/dir` listing. Paths in the body are
+/// shadows, so real names are only reachable via the codec.
+async fn filter_dir_listing(response: Response<Body>, codec: Arc<dyn PathCodec>) -> Response<Body> {
     use axum::body::to_bytes;
     use axum::http::header;
 
-    // Only successful JSON listings are rewritten.
     if response.status() != StatusCode::OK {
         return response;
     }
@@ -318,17 +160,12 @@ async fn rewrite_dir_response(
     }
 
     let (parts, body) = response.into_parts();
-    // A directory listing realistically never approaches this; the buffer is
-    // only a safety net. An over-limit body is data loss waiting to happen, so
-    // on the (rare) overflow we answer a real 500 instead of a misleading
-    // empty 200 — an empty "successful" listing would silently hide the whole
-    // directory from the user.
     let limit: usize = 64 * 1024 * 1024;
     let bytes = match to_bytes(body, limit).await {
         Ok(b) => b,
         Err(_) => {
             tracing::warn!(
-                "rewrite_dir_response: listing body exceeded {} bytes; returning 500",
+                "filter_dir_listing: listing body exceeded {} bytes; returning 500",
                 limit
             );
             return Response::builder()
@@ -342,30 +179,26 @@ async fn rewrite_dir_response(
         Err(_) => return Response::from_parts(parts, Body::from(bytes)),
     };
 
-    let real = real_prefix.trim_matches('/');
-    let disp = display_prefix.trim_matches('/');
     if let serde_json::Value::Array(entries) = &mut value {
         let mut kept: Vec<serde_json::Value> = Vec::with_capacity(entries.len());
         for entry in entries.drain(..) {
-            let mut obj = match entry {
-                serde_json::Value::Object(o) => o,
-                _ => continue,
-            };
-            let Some(serde_json::Value::String(p)) = obj.remove("path") else {
+            let Some(serde_json::Value::String(shadow)) = entry.get("path") else {
+                kept.push(entry);
                 continue;
             };
-            // Drop libfw's own upload-session temp files (`.libfw-sess-*`,
-            // `.libfw-tmp-*` and their `.blocks` sidecars): an interrupted
-            // upload leaves them behind, and a folder download must never
-            // pull them in. (The UI listing already skips hidden files.)
-            if p.rsplit('/').next().unwrap_or("").starts_with(".libfw-") {
+            // Undecodable entries (shouldn't happen) are kept as-is; a
+            // tampered shadow would fail decode and be dropped below by the
+            // basename check only if it happens to decode.
+            let real = codec.decode(shadow).unwrap_or_default();
+            if real
+                .rsplit('/')
+                .next()
+                .unwrap_or("")
+                .starts_with(".libfw-")
+            {
                 continue;
             }
-            obj.insert(
-                "path".to_string(),
-                serde_json::Value::String(map_listing_path(&p, real, disp)),
-            );
-            kept.push(serde_json::Value::Object(obj));
+            kept.push(entry);
         }
         *entries = kept;
     }
@@ -375,25 +208,6 @@ async fn rewrite_dir_response(
     parts.headers.remove(header::CONTENT_LENGTH);
     let body = Body::from(serde_json::to_vec(&value).unwrap_or_else(|_| bytes.to_vec()));
     Response::from_parts(parts, body)
-}
-
-/// Map a real listing path (e.g. `nested/public2/a.txt`) back to the display
-/// path the user sees (e.g. `public2/a.txt`) using the real/display prefixes
-/// of the current `/dir` request.
-fn map_listing_path(real_path: &str, real_prefix: &str, display_prefix: &str) -> String {
-    let suffix = if real_prefix.is_empty() {
-        real_path.to_string()
-    } else {
-        match real_path.strip_prefix(real_prefix) {
-            Some(rest) => rest.trim_start_matches('/').to_string(),
-            None => real_path.to_string(),
-        }
-    };
-    if display_prefix.is_empty() {
-        suffix
-    } else {
-        format!("{}/{}", display_prefix, suffix)
-    }
 }
 
 /// Strips a URL prefix from incoming request paths before forwarding to the
@@ -571,13 +385,26 @@ async fn main() {
     // enabling compression is safe now; the frontend learns whether the server
     // serves zrip via config.js (window.ONESHARE_LIBFW.compress) and sets its
     // own `compress` flag to match.
+    // libfw's EncryptedPathCodec: real storage paths become opaque `v1.…`
+    // shadows everywhere they touch the browser — bearer tokens, `/file` and
+    // `/dir` URLs, directory listings, upload echoes. The same codec drives
+    // the embedded server (decode/encode) and the token endpoint (binding
+    // tokens to shadows). Refuse to start without a valid key: an identity
+    // fallback would silently leak real paths, which is what the codec
+    // exists to prevent.
+    let codec = config
+        .libfw
+        .path_codec()
+        .unwrap_or_else(|e| panic!("invalid libfw path codec config: {e}"));
+
     let libfw_state = Arc::new(
         ServerState::builder()
             .storage(FsStorage::new(config.root_dir()))
             .verifier(OneshareTokenVerifier {
                 hmac_key: hmac_secret.clone(),
             })
-            .validator(PathValidator::new())
+            .validator(CodecPathValidator::new(Arc::new(codec.clone())))
+            .path_codec(codec.clone())
             .compression(config.libfw.compression_format())
             .max_upload_size(config.libfw.max_upload_size)
             .build(),
@@ -591,6 +418,7 @@ async fn main() {
         session_manager,
         hmac_key: hmac_secret,
         secure_cookies: config.server.session_cookie_secure,
+        path_codec: Arc::new(codec),
     });
 
     // libfw 0.3.4 ships a built-in stale session-temp sweeper
@@ -605,14 +433,19 @@ async fn main() {
 
     // libfw file transfer routes (uses its own state, embedded via any_service).
     // FreshPathParams clears the outer router's `{*path}` captures so libfw's
-    // own path match is the only one its `Path` extractor sees. VirtualTranslate
-    // rewrites non-admin virtual paths (/file/public2/... → /file/nested/public2/...)
-    // so real paths never leave the server; admin paths pass through.
-    let file_service = VirtualTranslate::new(FreshPathParams::new(libfw_app.clone()), state.clone());
-    let dir_service = VirtualTranslate::new(FreshPathParams::new(libfw_app.clone()), state.clone());
+    // own path match is the only one its `Path` extractor sees. There is no
+    // path translation layer anymore: clients send opaque `v1.…` shadows
+    // (from `/api/files/token` / `/dir` listings), and the embedded server
+    // decodes + authorizes them itself — real paths never appear in URLs or
+    // responses.
+    let file_service = FreshPathParams::new(libfw_app.clone());
+    let dir_service = DirListingFilter::new(
+        FreshPathParams::new(libfw_app.clone()),
+        state.path_codec.clone(),
+    );
     // libfw's capability advertisement (`GET /capabilities`) is deliberately
     // public — the browser SDK fetches it before any auth to auto-tune. It has
-    // no `{*path}` capture, so it needs no FreshPathParams or VirtualTranslate.
+    // no `{*path}` capture, so it needs no FreshPathParams.
     let caps_service = libfw_app;
 
     let mut app = Router::new()
@@ -626,6 +459,7 @@ async fn main() {
         .route("/api/files/move", put(api::files::mv))
         .route("/api/files/mkdir", post(api::files::mkdir))
         .route("/api/files/token", get(api::files::get_token))
+        .route("/api/files/names", get(api::files::get_names))
         .route("/api/admin/users", get(api::admin::list_users))
         .route("/api/admin/groups", get(api::admin::list_groups))
         .route("/api/admin/groups", post(api::admin::create_group))

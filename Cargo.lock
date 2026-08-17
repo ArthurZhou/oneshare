@@ -504,8 +504,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ff2abc00be7fca6ebc474524697ae276ad847ad0a6b3faa4bcb027e9a4614ad0"
 dependencies = [
  "cfg-if",
+ "js-sys",
  "libc",
  "wasi",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -908,7 +910,10 @@ version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "01f66169619648a020a7f80724d65e2c0b17e1188256ae1ee9eb306c716d38a2"
 dependencies = [
+ "aes-gcm",
  "async-trait",
+ "base64",
+ "getrandom 0.2.17",
  "serde",
  "serde_json",
  "sha2",

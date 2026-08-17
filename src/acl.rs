@@ -224,6 +224,41 @@ pub fn resolve_virtual(virtual_path: &str, shares: &[Share]) -> Option<String> {
     }
 }
 
+/// Map a real path back to the display path the user sees — the inverse of
+/// [`resolve_virtual`]. Users who see the real tree (admins, root-ACL
+/// holders) get the real path back unchanged; everyone else is mapped through
+/// their shares, with the most specific (longest real prefix) share winning.
+/// Returns `None` when the real path is not inside any of the user's shares.
+pub fn display_path_for(
+    user: &UserRow,
+    user_groups: &[i64],
+    acl_entries: &[AclEntryRow],
+    real_path: &str,
+) -> Option<String> {
+    let real = normalize_path(real_path);
+    if user.is_admin == 1 || user_has_root_read(user, user_groups, acl_entries) {
+        return Some(real);
+    }
+    let mut best: Option<(usize, String)> = None; // (real prefix len, display)
+    for share in user_shares(user, user_groups, acl_entries) {
+        let sr = normalize_path(&share.real_path);
+        let cand = if real == sr {
+            Some((sr.len(), share.virtual_name.clone()))
+        } else if real.starts_with(&format!("{}/", sr)) {
+            let rest = &real[sr.len() + 1..];
+            Some((sr.len(), format!("{}/{}", share.virtual_name, rest)))
+        } else {
+            None
+        };
+        if let Some(c) = cand {
+            if best.as_ref().map(|(l, _)| c.0 > *l).unwrap_or(true) {
+                best = Some(c);
+            }
+        }
+    }
+    best.map(|(_, d)| d)
+}
+
 /// Whether a root-level ACL (`path == ""`) grants `user` read access to the
 /// whole tree. Used to decide whether the virtual root should fall back to
 /// the real root listing.
@@ -484,4 +519,35 @@ mod tests {
         assert_eq!(resolve_virtual("public2/../../secret", &shares), None);
         assert_eq!(resolve_virtual("public2/..", &shares), None);
     }
+
+    #[test]
+    fn display_path_roundtrips_shares() {
+        let u = user(1, false);
+        let entries = vec![
+            acl(1, "nested/public2", Some(1), None, "read"),
+            acl(2, "docs", Some(1), None, "read"),
+        ];
+        let shares = user_shares(&u, &[], &entries);
+        // resolve_virtual: display -> real
+        assert_eq!(resolve_virtual("public2/a.txt", &shares).as_deref(), Some("nested/public2/a.txt"));
+        assert_eq!(resolve_virtual("docs/sub/b.md", &shares).as_deref(), Some("docs/sub/b.md"));
+        // display_path_for: real -> display (inverse)
+        assert_eq!(display_path_for(&u, &[], &entries, "nested/public2/a.txt").as_deref(), Some("public2/a.txt"));
+        assert_eq!(display_path_for(&u, &[], &entries, "nested/public2").as_deref(), Some("public2"));
+        assert_eq!(display_path_for(&u, &[], &entries, "docs/sub/b.md").as_deref(), Some("docs/sub/b.md"));
+        assert_eq!(display_path_for(&u, &[], &entries, "elsewhere/x"), None);
+        // Most specific share wins (nested deeper real path)
+        let entries2 = vec![
+            acl(1, "nested/public2", Some(1), None, "read"),
+            acl(2, "nested/public2/deep", Some(1), None, "read"),
+        ];
+        assert_eq!(
+            display_path_for(&u, &[], &entries2, "nested/public2/deep/f.txt").as_deref(),
+            Some("deep/f.txt")
+        );
+        // Admin sees the real path itself
+        assert_eq!(display_path_for(&user(2, true), &[], &entries, "nested/public2/a.txt").as_deref(), Some("nested/public2/a.txt"));
+    }
+
+
 }

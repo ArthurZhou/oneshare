@@ -10,6 +10,7 @@ use axum::{
     response::IntoResponse,
 };
 use axum_extra::extract::cookie::CookieJar;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 /// Whether the user sees the real filesystem tree (admins, and any user with a
@@ -529,6 +530,54 @@ fn default_op() -> String {
     "read".to_string()
 }
 
+/// Decode a batch of opaque shadow paths back to the display paths the user
+/// sees (`{shadow: display}`).
+///
+/// The libfw SDK writes downloaded files using the transfer path it was
+/// given — which is an opaque `v1.…` shadow, so without this the user would
+/// get files/folders named after shadows. The frontend calls this while a
+/// folder download walks `/dir`, then maps shadows to display names locally.
+/// Users can only resolve shadows they could read anyway: every decoded real
+/// path must lie inside the caller's shares, otherwise the whole request 403s.
+#[derive(serde::Deserialize)]
+pub struct NamesQuery {
+    /// Comma-separated shadow paths (shadows are base64url + `.`, so no
+    /// escaping issues) — one request per batch of ≤200.
+    pub paths: String,
+}
+
+pub async fn get_names(
+    State(state): State<Arc<AppState>>,
+    jar: CookieJar,
+    Query(query): Query<NamesQuery>,
+) -> Result<Json<HashMap<String, String>>, StatusCode> {
+    let paths: Vec<&str> = query.paths.split(',').filter(|s| !s.is_empty()).collect();
+    if paths.is_empty() || paths.len() > 200 {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let ru = get_request_user(&jar, &state.db).await?;
+    let acl_entries = state
+        .db
+        .list_acl_entries()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let mut out = HashMap::with_capacity(paths.len());
+    let mut seen = std::collections::HashSet::new();
+    for shadow in &paths {
+        if !seen.insert(*shadow) {
+            continue;
+        }
+        let real = state
+            .path_codec
+            .decode(shadow)
+            .map_err(|_| StatusCode::BAD_REQUEST)?;
+        let display = acl::display_path_for(&ru.user, &ru.groups, &acl_entries, &real)
+            .ok_or(StatusCode::FORBIDDEN)?;
+        out.insert(shadow.to_string(), display);
+    }
+    Ok(Json(out))
+}
+
 pub async fn get_token(
     State(state): State<Arc<AppState>>,
     jar: CookieJar,
@@ -538,20 +587,45 @@ pub async fn get_token(
     // group can read, which is what powers downloads without a session.
     let ru = get_request_user(&jar, &state.db).await?;
 
-    // The token is bound to the REAL path. The frontend only ever supplies a
-    // virtual path (non-admin), which we resolve here. Since libfw 0.3.0
-    // drives transfers over HTTP (`/file`, `/dir`), OneShare's VirtualTranslate
-    // middleware resolves the display path the SDK sends back to this real
-    // path — so the client only ever sees (and sends) virtual paths, keeping
-    // real paths out of the browser. Admin/root-ACL users' display path IS the
-    // real path, so it equals what they sent.
-    let real_path = resolve_checked(&state, &ru.user, &ru.groups, &query.path, {
-        match query.op.as_str() {
-            "write" => Permission::Write,
-            _ => Permission::Read,
+    // The token is bound to an OPAQUE shadow of the real path
+    // (`EncryptedPathCodec` → `v1.<base64url>`), so the browser never holds
+    // the real path — not in the token, not in the transfer URL. libfw
+    // decodes the shadow it receives on `/file`/`/dir` back to the real path
+    // and authorizes it against this token (via `CodecPathValidator`).
+    //
+    // Input `path` may be:
+    // - a shadow (`v1.…`) the client got from a `/dir` listing or a previous
+    //   token — decoded here, then ACL-gated on the real path; or
+    // - a display path (non-admin ACL share) / real path (admin) — resolved
+    //   through the ACL layer as before. The response's `path` field is the
+    //   shadow; transfer URLs MUST use it.
+    let acl_entries = state
+        .db
+        .list_acl_entries()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let permission = match query.op.as_str() {
+        "write" => Permission::Write,
+        _ => Permission::Read,
+    };
+    let real_path = match state.path_codec.decode(&query.path) {
+        Ok(real) => {
+            // Shadow input: still gate on ACL (share may have been revoked
+            // since the listing was served).
+            acl::can_access(&ru.user, &ru.groups, &acl_entries, &real, &permission)
+                .then_some(real)
+                .ok_or(StatusCode::FORBIDDEN)?
         }
-    })
-    .await?;
+        Err(_) => {
+            // Not a shadow: resolve the display/real path through the ACL
+            // layer (admin/root-ACL users pass real paths; non-admins pass
+            // share display paths).
+            resolve_checked(&state, &ru.user, &ru.groups, &query.path, permission).await?
+        }
+    };
+
+    // Bind the token to a fresh shadow of the real path. Every encode uses a
+    // random nonce, so even the same file yields distinct shadows per token.
+    let shadow = state.path_codec.encode(&real_path);
 
     let ttl_secs = 3600u64;
 
@@ -564,7 +638,7 @@ pub async fn get_token(
     let token = issue_token(
         &state.hmac_key,
         &ru.user.id.to_string(),
-        &real_path,
+        &shadow,
         permissions,
         ttl_secs,
     );
@@ -572,6 +646,10 @@ pub async fn get_token(
     Ok(Json(TokenResponse {
         token,
         expires_in: ttl_secs,
+        // The shadow bound to this token. The frontend must use it as the
+        // transfer path (`/file/{path}` / `/dir/{path}`) — the display path
+        // it sent would fail libfw's codec decode.
+        path: shadow,
     }))
 }
 
