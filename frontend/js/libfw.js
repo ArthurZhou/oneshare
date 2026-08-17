@@ -59,6 +59,17 @@
     tuneTtlMs: typeof served.tuneTtlMs === 'number' ? served.tuneTtlMs : 3600000,
   };
 
+  // Latest adaptive-tuning state (phase + params + last-window stats), kept
+  // on the facade so the UI can render a live tuning readout without losing
+  // events fired before the transfers panel subscribed. `onTuningChange` is a
+  // hook the UI sets once on boot; every `{ type: 'tuning' }` event is both
+  // recorded here and forwarded through it.
+  const tuningState = {
+    phase: null,
+    params: null,
+    stats: null,
+  };
+
   // ── SDK classes (the UMD bundle exports them on window.LibfwClient) ──
   const Sdk = window.LibfwClient || {};
   const LibfwClientClass = Sdk.LibfwClient || Sdk.default;
@@ -339,6 +350,20 @@
     _chain: Promise.resolve(),
     _activeOnEvent: null,
 
+    // Latest tuning state (see `tuningState` above) + UI hook.
+    tuning: tuningState,
+    onTuningChange: null,
+
+    _handleEvent(ev) {
+      if (ev && ev.type === 'tuning') {
+        tuningState.phase = ev.phase;
+        tuningState.params = ev.params || null;
+        tuningState.stats = ev.stats || null;
+        if (typeof this.onTuningChange === 'function') this.onTuningChange(tuningState);
+      }
+      if (typeof this._activeOnEvent === 'function') this._activeOnEvent(ev);
+    },
+
     _getClient(destPath) {
       if (!this._client && LibfwClientClass) {
         this._client = new OneshareLibfwClient({
@@ -358,9 +383,7 @@
           timeoutMs: opts.timeoutMs,
           autoTune: opts.autoTune,
           tuneTtlMs: opts.tuneTtlMs,
-          onEvent: (ev) => {
-            if (typeof this._activeOnEvent === 'function') this._activeOnEvent(ev);
-          },
+          onEvent: (ev) => this._handleEvent(ev),
         });
       }
       if (this._client) this._client._uploadDest = destPath || '';

@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>OneShare - File Sharing</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M22 12H2'/%3E%3Cpath d='M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z'/%3E%3Cline x1='6' y1='16' x2='6.01' y2='16'/%3E%3Cline x1='10' y1='16' x2='10.01' y2='16'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
@@ -69,6 +70,15 @@
   <div class="transfers-header">
     <span><i data-feather="activity"></i> Transfers</span>
     <button id="transfers-clear" class="btn btn-sm" title="Clear finished tasks"><i data-feather="x"></i></button>
+  </div>
+  <div id="tuning-bar" class="tuning-bar" style="display:none">
+    <span id="tuning-phase" class="tuning-phase">—</span>
+    <span class="tuning-chip"><b>conc</b><i id="tuning-conc">—</i></span>
+    <span class="tuning-chip"><b>up win</b><i id="tuning-uw">—</i></span>
+    <span class="tuning-chip"><b>dl win</b><i id="tuning-dw">—</i></span>
+    <span class="tuning-chip"><b>chunk</b><i id="tuning-chunk">—</i></span>
+    <span class="tuning-chip"><b>rtt</b><i id="tuning-rtt">—</i></span>
+    <span class="tuning-chip"><b>mbps</b><i id="tuning-mbps">—</i></span>
   </div>
   <div id="transfers-list" class="transfers-list"></div>
 </div>

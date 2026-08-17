@@ -429,6 +429,59 @@ function finalizingPct(t) {
   return 99;
 }
 
+// ── Transfers: live adaptive-tuning readout ──
+//
+// libfw-client's tuning engine (autoTune) emits `{ type: 'tuning', phase,
+// params, stats }` events while a transfer runs. The panel shows the latest
+// state in a compact bar above the transfer list; `Libfw.tuning` holds the
+// most recent snapshot so a transfer started before this UI subscribed still
+// renders correctly.
+
+const PHASE_LABEL = {
+  uninitialized: 'tuning —',
+  ramping: 'tuning ↑',
+  settled: 'tuned ✓',
+  degraded: 'degraded ⚠',
+};
+
+function fmtChunk(n) {
+  if (n == null || isNaN(n)) return '—';
+  if (n < 1024) return n + ' B';
+  const u = ['KiB', 'MiB', 'GiB'];
+  let i = -1;
+  do { n /= 1024; i++; } while (n >= 1024 && i < u.length - 1);
+  return (n >= 100 ? n.toFixed(0) : n.toFixed(1)) + ' ' + u[i];
+}
+
+function renderTuningBar() {
+  const bar = document.getElementById('tuning-bar');
+  if (!bar) return;
+  const t = Libfw.tuning;
+  // Show the bar once the engine has made at least one measurement; hide it
+  // if tuning is disabled entirely.
+  if (!Libfw.opts.autoTune || !t.phase) {
+    bar.style.display = 'none';
+    return;
+  }
+  bar.style.display = 'flex';
+  const set = (id, v) => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = v;
+  };
+  const p = t.params || {};
+  const s = t.stats || {};
+  set('tuning-phase', PHASE_LABEL[t.phase] || t.phase);
+  set('tuning-conc', p.concurrency != null ? p.concurrency : '—');
+  set('tuning-uw', p.uploadWindow != null ? p.uploadWindow : '—');
+  set('tuning-dw', p.downloadWindow != null ? p.downloadWindow : '—');
+  set('tuning-chunk', fmtChunk(p.chunkSize));
+  set('tuning-rtt', s.rttMs != null ? Math.round(s.rttMs) + 'ms' : '—');
+  set('tuning-mbps', s.mbps != null ? s.mbps.toFixed(1) : '—');
+}
+
+// Subscribe once on boot: every tuning event refreshes the bar live.
+Libfw.onTuningChange = renderTuningBar;
+
 function renderTransfers() {
   const panel = document.getElementById('transfers-panel');
   const list = document.getElementById('transfers-list');
@@ -438,6 +491,7 @@ function renderTransfers() {
     return;
   }
   panel.style.display = 'block';
+  renderTuningBar();
 
   list.innerHTML = transfers.map(t => {
     const done = t.status === 'done';

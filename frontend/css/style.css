@@ -43,11 +43,6 @@
   }
 }
 
-@font-face {
-  font-family: sarasa;
-  src: url('/font.woff')
-}
-
 /* ── Reset & base ── */
 *,
 *::before,
@@ -841,6 +836,36 @@ a:hover {
 .transfers-list {
   overflow-y: auto;
   padding: 8px 14px 12px;
+}
+
+.tuning-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--line);
+  font-size: 10px;
+  text-transform: uppercase;
+}
+
+.tuning-phase {
+  font-weight: 900;
+  color: var(--accent);
+  letter-spacing: 0.5px;
+}
+
+.tuning-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.tuning-chip i {
+  font-style: normal;
+  color: var(--text);
 }
 
 .transfer-row {
