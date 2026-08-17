@@ -44,10 +44,19 @@
     maxRetries: typeof served.maxRetries === 'number' ? served.maxRetries : 3,
     baseRetryDelayMs: typeof served.baseRetryDelayMs === 'number' ? served.baseRetryDelayMs : 500,
     maxRetryDelayMs: typeof served.maxRetryDelayMs === 'number' ? served.maxRetryDelayMs : 30000,
-    // The libfw engine applies timeoutMs as a PER-READ timeout on the WS and
-    // aborts the whole transfer if any single read stalls longer than it.
-    // Keep the fallback generous (10 min) so it never kills active transfers.
+    // The libfw engine applies timeoutMs as a PER-READ timeout on HTTP
+    // transfers and aborts the whole transfer if any single read stalls
+    // longer than it. Keep the fallback generous (10 min) so it never kills
+    // active transfers.
     timeoutMs: typeof served.timeoutMs === 'number' ? served.timeoutMs : 600000,
+    // Adaptive tuning (libfw-client >= 0.3.3): when enabled the engine probes
+    // the server's public /capabilities advertisement and TCP-style ramps
+    // concurrency / windows / chunk sizes from real transfer stats, persisting
+    // a settled result per origin for tuneTtlMs. The static knobs above are
+    // the starting/minimum values. Tuning updates arrive as
+    // `{ type: 'tuning', phase, params, stats }` events.
+    autoTune: served.autoTune === true,
+    tuneTtlMs: typeof served.tuneTtlMs === 'number' ? served.tuneTtlMs : 3600000,
   };
 
   // ── SDK classes (the UMD bundle exports them on window.LibfwClient) ──
@@ -148,6 +157,8 @@
           baseRetryDelayMs: opts.baseRetryDelayMs,
           maxRetryDelayMs: opts.maxRetryDelayMs,
           timeoutMs: opts.timeoutMs,
+          autoTune: opts.autoTune,
+          tuneTtlMs: opts.tuneTtlMs,
           onEvent: (ev) => {
             if (typeof this._activeOnEvent === 'function') this._activeOnEvent(ev);
           },

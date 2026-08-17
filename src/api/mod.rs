@@ -35,6 +35,8 @@ pub async fn config_js(State(state): State<Arc<AppState>>) -> impl IntoResponse 
         "baseRetryDelayMs": libfw.base_retry_delay_ms,
         "maxRetryDelayMs": libfw.max_retry_delay_ms,
         "timeoutMs": libfw.timeout_ms,
+        "autoTune": libfw.auto_tune,
+        "tuneTtlMs": libfw.tune_ttl_ms,
     });
     // `window.ONESHARE_TRASH` tells the frontend whether deletions are moved
     // to the configured trash directory (instead of being permanently

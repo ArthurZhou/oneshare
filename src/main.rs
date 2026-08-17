@@ -593,31 +593,13 @@ async fn main() {
         secure_cookies: config.server.session_cookie_secure,
     });
 
-    // libfw 0.3.0's concurrent upload protocol leaves a `.libfw-sess-*` temp
-    // (plus a `.blocks` sidecar) behind whenever a browser dies mid-upload;
-    // sweep abandoned ones periodically so they don't accumulate on disk.
-    // `cleanup_stale_sessions` only removes temps whose last write is older
-    // than `max_age` — never committed user files.
-    {
-        let storage = libfw_state.storage.clone();
-        tokio::spawn(async move {
-            let mut tick = tokio::time::interval(std::time::Duration::from_secs(60 * 60));
-            // Skip the immediate first tick so the first sweep is a full
-            // interval later.
-            tick.tick().await;
-            loop {
-                tick.tick().await;
-                match storage
-                    .cleanup_stale_sessions(std::time::Duration::from_secs(24 * 60 * 60))
-                    .await
-                {
-                    Ok(0) => {}
-                    Ok(n) => tracing::info!("cleaned {n} stale libfw upload-session temp(s)"),
-                    Err(e) => tracing::warn!("libfw session cleanup failed: {e}"),
-                }
-            }
-        });
-    }
+    // libfw 0.3.4 ships a built-in stale session-temp sweeper
+    // (`spawn_stale_session_cleanup`): the concurrent upload protocol leaves a
+    // `.libfw-sess-*` temp (plus a `.blocks` sidecar) behind whenever a
+    // browser dies mid-upload, and the sweeper removes ones whose last write
+    // is older than the TTL — never committed user files. Defaults: 1h sweep
+    // interval, 24h TTL.
+    libfw_state.spawn_stale_session_cleanup();
 
     let libfw_app = libfw_router(libfw_state);
 
@@ -628,12 +610,10 @@ async fn main() {
     // so real paths never leave the server; admin paths pass through.
     let file_service = VirtualTranslate::new(FreshPathParams::new(libfw_app.clone()), state.clone());
     let dir_service = VirtualTranslate::new(FreshPathParams::new(libfw_app.clone()), state.clone());
-    // libfw 0.3.0's browser SDK drives transfers over HTTP (`/file`, `/dir`),
-    // which go through VirtualTranslate above. The `/ws` WebSocket endpoint
-    // remains for raw clients and older builds, so keep it mounted with libfw's
-    // own handler. The `/ws` route has no `{*path}` capture, so it needs no
-    // FreshPathParams either.
-    let ws_service = libfw_app;
+    // libfw's capability advertisement (`GET /capabilities`) is deliberately
+    // public — the browser SDK fetches it before any auth to auto-tune. It has
+    // no `{*path}` capture, so it needs no FreshPathParams or VirtualTranslate.
+    let caps_service = libfw_app;
 
     let mut app = Router::new()
         .route("/auth/login", get(api::auth::login))
@@ -662,7 +642,7 @@ async fn main() {
         .route("/config.js", get(api::config_js))
         .route("/file/{*path}", any_service(file_service))
         .route("/dir/{*path}", any_service(dir_service))
-        .route("/ws", any_service(ws_service))
+        .route("/capabilities", any_service(caps_service))
         // Frontend fallback: debug builds serve the loose ./frontend directory
         // (with revalidation so browsers never cache stale JS/CSS during dev);
         // release builds serve the minified assets embedded by build.rs. See

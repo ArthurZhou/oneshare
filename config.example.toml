@@ -64,3 +64,13 @@ max_retry_delay_ms = 30000
 # healthy transfer; 0 disables the JS timer (browser network errors still
 # detect a dead peer).
 timeout_ms = 600000
+# Adaptive tuning (libfw-client >= 0.3.3): when true, the browser probes the
+# server's public /capabilities advertisement and TCP-style ramps
+# concurrency / windows / chunk sizes (and the zrip level) from real
+# transfer stats, persisting a settled result per origin for tune_ttl_ms.
+# The static knobs above act as starting/minimum values. Default false —
+# transfers then behave exactly as configured.
+auto_tune = false
+# How long a settled tuning result is reused before re-ramping (ms).
+# Only meaningful with auto_tune = true. Default 3600000 (1 h).
+tune_ttl_ms = 3600000

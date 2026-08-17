@@ -77,6 +77,21 @@ pub struct LibfwConfig {
     /// still surfaces a truly dead peer).
     #[serde(default = "default_timeout_ms")]
     pub timeout_ms: u64,
+    /// Client SDK: enable the adaptive tuning engine (default false).
+    ///
+    /// When enabled the browser probes the server's public `GET /capabilities`
+    /// advertisement and TCP-style ramps concurrency / windows / chunk sizes
+    /// (and the zrip level) from real transfer stats, persisting a settled
+    /// result per origin (`tune_ttl_ms`). Static knobs above act as the
+    /// starting/minimum values. Disabled by default so transfers behave
+    /// exactly as configured.
+    #[serde(default)]
+    pub auto_tune: bool,
+    /// Client SDK: how long a settled tuning result is reused for the same
+    /// server origin before re-ramping, in ms (default 1 h). Only meaningful
+    /// with `auto_tune = true`.
+    #[serde(default = "default_tune_ttl_ms")]
+    pub tune_ttl_ms: u64,
 }
 
 impl Default for LibfwConfig {
@@ -92,6 +107,8 @@ impl Default for LibfwConfig {
             base_retry_delay_ms: default_base_retry_delay_ms(),
             max_retry_delay_ms: default_max_retry_delay_ms(),
             timeout_ms: default_timeout_ms(),
+            auto_tune: false,
+            tune_ttl_ms: default_tune_ttl_ms(),
         }
     }
 }
@@ -125,6 +142,9 @@ fn default_max_retry_delay_ms() -> u64 {
 }
 fn default_timeout_ms() -> u64 {
     600_000 // 10 min — generous per-read timeout so active transfers aren't aborted
+}
+fn default_tune_ttl_ms() -> u64 {
+    3_600_000 // 1 h — matches the libfw-client SDK's own tuneTtlMs default
 }
 
 impl LibfwConfig {
