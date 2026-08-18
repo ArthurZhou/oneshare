@@ -24,6 +24,12 @@
 
   // ── Config served by the backend (/config.js) ──
   const base = ((typeof window.ONESHARE_BASE === 'string' && window.ONESHARE_BASE) || '').replace(/\/+$/, '');
+  // Release builds serve the embedded WASM with long-lived immutable caching,
+  // keyed by the bundle version (`?v=…`, see statics.rs `static_version`).
+  // Mirror it here so the SDK fetches the versioned URL and never reuses a
+  // stale wasm after an upgrade. Debug builds serve no-cache, so this stays
+  // empty there and the SDK uses its default script-relative resolution.
+  const bundleVersion = (typeof window.ONESHARE_VERSION === 'string' && window.ONESHARE_VERSION) || '';
   const served = (typeof window.ONESHARE_LIBFW === 'object' && window.ONESHARE_LIBFW) || {};
   const opts = {
     compress: served.compress !== false,
@@ -394,6 +400,12 @@
           timeoutMs: opts.timeoutMs,
           autoTune: opts.autoTune,
           tuneTtlMs: opts.tuneTtlMs,
+          // Release builds cache the wasm immutably keyed by the bundle
+          // version; point the SDK at the versioned URL. Debug (no version)
+          // keeps the default script-relative resolution.
+          wasmUrl: bundleVersion
+            ? (base || '') + '/vendor/libfw_client_bg.wasm?v=' + encodeURIComponent(bundleVersion)
+            : undefined,
           onEvent: (ev) => this._handleEvent(ev),
         });
       }

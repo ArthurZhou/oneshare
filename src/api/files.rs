@@ -4,6 +4,7 @@ use crate::db::{AclEntryRow, UserRow};
 use crate::libtoken::issue_token;
 use crate::models::*;
 use crate::AppState;
+use libfw_core::pathmap::PathCodec;
 use axum::{
     extract::{Json, Query, State},
     http::StatusCode,
@@ -604,6 +605,10 @@ fn default_op() -> String {
 /// given — which is an opaque `v1.…` shadow, so without this the user would
 /// get files/folders named after shadows. The frontend calls this while a
 /// folder download walks `/dir`, then maps shadows to display names locally.
+/// Uploads pass **compound** shadows (`{dirShadow}/{literal…}`) as their plan
+/// paths too, so each path is decoded whole-first and, failing that, as the
+/// longest decodable segment prefix plus the literal remainder (see
+/// [`decode_compound`]) — matching libfw's own `resolve_client_path`.
 /// Users can only resolve shadows they could read anyway: every decoded real
 /// path must lie inside the caller's shares, otherwise the whole request 403s.
 #[derive(serde::Deserialize)]
@@ -634,15 +639,50 @@ pub async fn get_names(
         if !seen.insert(*shadow) {
             continue;
         }
-        let real = state
-            .path_codec
-            .decode(shadow)
-            .map_err(|_| StatusCode::BAD_REQUEST)?;
+        // Whole-string decode first (a plain `v1.…` shadow); if that fails,
+        // fall back to hierarchical composition (`{dirShadow}/{literal…}`) so
+        // upload plan paths resolve too — mirrors libfw-server's
+        // `resolve_client_path`.
+        let real = match state.path_codec.decode(shadow) {
+            Ok(real) => real,
+            Err(_) => match decode_compound(&*state.path_codec, shadow) {
+                Some(real) => real,
+                None => return Err(StatusCode::BAD_REQUEST),
+            },
+        };
         let display = acl::display_path_for(&ru.user, &ru.groups, &acl_entries, &real)
             .ok_or(StatusCode::FORBIDDEN)?;
         out.insert(shadow.to_string(), display);
     }
     Ok(Json(out))
+}
+
+/// Decode the **longest** decodable segment prefix of `shadow` and append
+/// the trailing literal segments to the decoded real path.
+///
+/// This gives shadow paths hierarchical composition — a shadow for `docs`
+/// used as `{shadow}/a.txt` resolves to `docs/a.txt` — mirroring
+/// libfw-server's `decode_compound`/`resolve_client_path`, which the upload
+/// client relies on for plan paths (`{dirShadow}/{relative/path}`). The
+/// search is longest-prefix-first (`a/b/c` tries `a/b`, then `a`), splitting
+/// on `/` segment boundaries only so a decoded root can never swallow part of
+/// a literal segment. Returns `None` when no prefix decodes; the caller keeps
+/// the original decode error semantics (400).
+fn decode_compound(codec: &dyn PathCodec, shadow: &str) -> Option<String> {
+    let mut end = shadow.len();
+    while let Some(slash) = shadow[..end].rfind('/') {
+        end = slash;
+        let prefix = &shadow[..slash];
+        if let Ok(real) = codec.decode(prefix) {
+            let rest = &shadow[slash + 1..];
+            return Some(if real.is_empty() {
+                rest.to_string()
+            } else {
+                format!("{real}/{rest}")
+            });
+        }
+    }
+    None
 }
 
 pub async fn get_token(
@@ -728,6 +768,56 @@ mod tests {
         let p = std::env::temp_dir().join(format!("oneshare-{}-{}", name, std::process::id()));
         let _ = std::fs::remove_dir_all(&p);
         p
+    }
+
+    /// Whole-string-only codec (like `EncryptedPathCodec`): only `"docs"`
+    /// decodes; compound paths must be split at `/` until the prefix decodes.
+    struct DocsOnly;
+
+    impl PathCodec for DocsOnly {
+        fn encode(&self, real: &str) -> String {
+            real.to_string()
+        }
+        fn decode(&self, shadow: &str) -> Result<String, libfw_core::pathmap::PathCodecError> {
+            if shadow == "docs" {
+                Ok("real/docs".to_string())
+            } else {
+                Err(libfw_core::pathmap::PathCodecError::Unmapped(shadow.to_string()))
+            }
+        }
+    }
+
+    #[test]
+    fn decode_compound_resolves_dir_shadow_plus_literal_suffix() {
+        let real = decode_compound(&DocsOnly, "docs/sub/deep/file.txt").unwrap();
+        assert_eq!(real, "real/docs/sub/deep/file.txt");
+    }
+
+    #[test]
+    fn decode_compound_prefers_longest_decodable_prefix() {
+        struct TwoLevel;
+        impl PathCodec for TwoLevel {
+            fn encode(&self, real: &str) -> String {
+                real.to_string()
+            }
+            fn decode(&self, shadow: &str) -> Result<String, libfw_core::pathmap::PathCodecError> {
+                match shadow {
+                    "docs" => Ok("real/docs".to_string()),
+                    "docs/sub" => Ok("real/docs/sub".to_string()),
+                    _ => Err(libfw_core::pathmap::PathCodecError::Unmapped(shadow.to_string())),
+                }
+            }
+        }
+        // "docs/sub" decodes and is longer than "docs", so it must win.
+        let real = decode_compound(&TwoLevel, "docs/sub/deep/file.txt").unwrap();
+        assert_eq!(real, "real/docs/sub/deep/file.txt");
+    }
+
+    #[test]
+    fn decode_compound_returns_none_when_nothing_decodes() {
+        assert_eq!(decode_compound(&DocsOnly, "other/deep/file.txt"), None);
+        // A whole shadow (no `/`) is not a compound — the caller handles it.
+        assert_eq!(decode_compound(&DocsOnly, "docs"), None);
     }
 
     #[test]

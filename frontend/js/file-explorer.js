@@ -1181,6 +1181,13 @@ function showModal(title, bodyHtml, onOk) {
 
 function hideModal() {
   document.getElementById('modal-overlay').style.display = 'none';
+  // Reset the OK button (a confirm dialog may have restyled it) so the next
+  // modal starts in its default state, however this modal was dismissed.
+  const okBtn = document.getElementById('modal-ok');
+  if (okBtn) {
+    okBtn.textContent = 'OK';
+    okBtn.classList.remove('btn-danger');
+  }
 }
 
 // ── Utilities ──

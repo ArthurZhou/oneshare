@@ -44,14 +44,25 @@ pub async fn config_js(State(state): State<Arc<AppState>>) -> impl IntoResponse 
     let trash_json = serde_json::json!({
         "enabled": state.config.trash_path().is_some(),
     });
+    // `window.ONESHARE_VERSION` is the release bundle's content hash (see
+    // `statics::static_version`): the frontend uses it to version the wasm URL
+    // so release-mode `immutable` caching never serves a stale engine after an
+    // upgrade. Empty in debug builds.
     let body = format!(
-        "// OneShare bootstrap config\nwindow.ONESHARE_BASE = {};\nwindow.ONESHARE_LIBFW = {};\nwindow.ONESHARE_TRASH = {};\n",
+        "// OneShare bootstrap config\nwindow.ONESHARE_BASE = {};\nwindow.ONESHARE_LIBFW = {};\nwindow.ONESHARE_TRASH = {};\nwindow.ONESHARE_VERSION = {};\n",
         serde_json::to_string(&base).unwrap_or_else(|_| "\"\"".to_string()),
         serde_json::to_string(&libfw_json).unwrap_or_else(|_| "{}".to_string()),
-        serde_json::to_string(&trash_json).unwrap_or_else(|_| "{\"enabled\":false}".to_string())
+        serde_json::to_string(&trash_json).unwrap_or_else(|_| "{\"enabled\":false}".to_string()),
+        serde_json::to_string(crate::statics::static_version())
+            .unwrap_or_else(|_| "\"\"".to_string())
     );
     (
-        [(header::CONTENT_TYPE, "application/javascript; charset=utf-8")],
+        [
+            (header::CONTENT_TYPE, "application/javascript; charset=utf-8"),
+            // Never cache config.js: it carries the version that busts the
+            // long-lived asset caches, so it must always be fresh.
+            (header::CACHE_CONTROL, "no-cache, must-revalidate"),
+        ],
         body,
     )
 }

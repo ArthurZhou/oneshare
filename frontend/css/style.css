@@ -43,6 +43,11 @@
   }
 }
 
+@font-face {
+  font-family: sarasa;
+  src: url('/font.woff')
+}
+
 /* ── Reset & base ── */
 *,
 *::before,
@@ -71,7 +76,7 @@ body {
 }
 
 body {
-  font-family: ui-monospace, sarasa, monospace;
+  font-family: sarasa, monospace;
   background: var(--bg);
   color: var(--text);
   -webkit-tap-highlight-color: transparent;
@@ -673,6 +678,7 @@ a:hover {
 .admin-tabs {
   display: flex;
   background: var(--secondary-bg);
+  overflow-x: auto;
 }
 
 .admin-tab {
@@ -685,6 +691,7 @@ a:hover {
   font-size: 13px;
   font-weight: 900;
   text-transform: uppercase;
+  white-space: nowrap;
 }
 
 .admin-tab:hover {
@@ -701,30 +708,25 @@ a:hover {
   flex: 1;
   overflow-y: auto;
   padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
 }
 
-.admin-acl-row,
-.admin-group-row,
-.admin-user-row {
+/* ── Panel chrome: toolbar + forms ── */
+.admin-toolbar {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 10px 4px;
-  font-size: 13px;
-  gap: 12px;
-}
-
-.admin-acl-add {
-  display: flex;
   gap: 10px;
-  margin-bottom: 16px;
   flex-wrap: wrap;
 }
 
-.admin-acl-add select,
-.admin-acl-add input,
-.admin-form-row input {
-  padding: 8px 10px;
+.admin-search {
+  flex: 1;
+  min-width: 180px;
+  max-width: 340px;
+  padding: 9px 12px;
   background: var(--input-bg);
   border: 1px solid var(--line);
   color: var(--text);
@@ -733,46 +735,313 @@ a:hover {
   outline: 0;
 }
 
-.admin-acl-add input:focus,
-.admin-acl-add select:focus,
-.admin-form-row input:focus {
+.admin-search:focus {
   background: var(--bg);
 }
 
+.admin-count {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+}
+
+.admin-form {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.admin-form input[type="text"],
+.admin-form select {
+  padding: 9px 10px;
+  background: var(--input-bg);
+  border: 1px solid var(--line);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 13px;
+  outline: 0;
+}
+
+.admin-form input[type="text"] {
+  flex: 1;
+  min-width: 140px;
+}
+
+.admin-form select {
+  min-width: 140px;
+}
+
+.admin-form input:focus,
+.admin-form select:focus {
+  background: var(--bg);
+}
+
+/* Edit mode: highlight the form so it's obvious an existing rule is being
+   edited rather than a new one added. */
+.admin-form.editing {
+  border: 1px solid var(--accent);
+  padding: 10px;
+}
+
+/* ── Tables (ACL, Users) ── */
+.admin-table {
+  border: 1px solid var(--line);
+  font-size: 13px;
+}
+
+.admin-th,
+.admin-tr {
+  display: grid;
+  grid-template-columns: 1.2fr 1fr 0.7fr auto;
+  gap: 12px;
+  align-items: center;
+  padding: 10px 14px;
+}
+
+.admin-th {
+  background: var(--secondary-bg);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 900;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.admin-tr {
+  border-top: 1px solid var(--line);
+  transition: background 0.1s;
+}
+
+.admin-tr:hover {
+  background: var(--row-hover);
+}
+
+.admin-tr.editing {
+  background: var(--secondary-bg);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.admin-empty {
+  padding: 24px 14px;
+  color: var(--muted);
+  font-size: 13px;
+  text-align: center;
+  border: 1px dashed var(--line);
+}
+
+.admin-loading {
+  padding: 24px 14px;
+  color: var(--muted);
+  font-size: 13px;
+  text-align: center;
+}
+
+/* ACL row cells */
+.acl-path {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow-wrap: anywhere;
+  font-weight: 700;
+}
+
+.acl-target {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow-wrap: anywhere;
+}
+
+.acl-type {
+  color: var(--muted);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+/* Permission badge (monochrome, matches the design language) */
 .perm {
+  justify-self: start;
   color: var(--accent);
   font-weight: 900;
   text-transform: uppercase;
+  letter-spacing: 0.05em;
+  border: 1px solid var(--accent);
+  padding: 2px 8px;
+  font-size: 11px;
+}
+
+.perm.admin {
+  color: var(--error);
+  border-color: var(--error);
+}
+
+/* Action buttons column */
+.admin-actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.admin-actions .btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+/* ── Group cards ── */
+.admin-card {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  font-size: 13px;
+}
+
+.admin-card + .admin-card {
+  margin-top: 8px;
+}
+
+.admin-card:hover {
+  background: var(--row-hover);
+}
+
+.admin-card-main {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.admin-card-icon {
+  flex-shrink: 0;
+  width: 34px;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--secondary-bg);
+  border: 1px solid var(--line);
+}
+
+.admin-card-title {
+  font-weight: 900;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.admin-card-sub {
+  color: var(--muted);
+  font-size: 12px;
+  margin-top: 2px;
+  overflow-wrap: anywhere;
 }
 
 .admin-tag {
   color: var(--accent);
   font-weight: 900;
   text-transform: uppercase;
-  font-size: 11px;
-}
-
-.modal-user-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 8px 0;
-  font-size: 13px;
+  font-size: 10px;
+  border: 1px solid var(--accent);
+  padding: 1px 6px;
+  letter-spacing: 0.05em;
 }
 
 .member-count {
   color: var(--muted);
   font-size: 11px;
-  font-weight: 600;
+  font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.03em;
-  margin-left: 8px;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
 }
 
-.group-desc {
+/* ── Users panel ── */
+.user-main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.avatar {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--secondary-bg);
+  border: 1px solid var(--line);
+  font-weight: 900;
+  text-transform: uppercase;
+  font-size: 12px;
+}
+
+.user-email {
   color: var(--muted);
   font-size: 12px;
-  margin-left: 8px;
+  margin-left: 6px;
+}
+
+.user-groups {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.group-badge {
+  background: var(--secondary-bg);
+  border: 1px solid var(--line);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  padding: 2px 8px;
+  letter-spacing: 0.03em;
+}
+
+.user-role {
+  justify-self: start;
+  white-space: nowrap;
+}
+
+/* Users table has a different column layout: User | Groups | Role */
+#user-table .admin-th,
+#user-table .admin-tr {
+  grid-template-columns: 1.4fr 1fr 0.6fr;
+}
+
+/* ── Group-manage modal ── */
+.modal-user-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+  font-size: 13px;
+  border-bottom: 1px dashed var(--line);
+}
+
+.modal-user-row:last-child {
+  border-bottom: none;
+}
+
+.modal-user-row.is-member .member-tag {
+  color: var(--accent);
+  font-weight: 700;
+  font-size: 11px;
+  text-transform: uppercase;
+  margin-left: 6px;
 }
 
 .member-summary {
@@ -781,11 +1050,94 @@ a:hover {
   margin-bottom: 10px;
 }
 
-.modal-user-row.is-member .member-tag {
-  color: var(--accent);
+.member-list-wrap {
+  max-height: 300px;
+  overflow-y: auto;
+  margin-top: 10px;
+}
+
+/* ── Toasts ── */
+.toast-container {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  z-index: 500;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.toast {
+  background: var(--text);
+  color: var(--bg);
+  border: 1px solid var(--line);
+  padding: 10px 16px;
+  font-size: 12px;
   font-weight: 700;
-  font-size: 11px;
-  margin-left: 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  max-width: 320px;
+  animation: oneshare-toast-in 0.18s ease;
+  pointer-events: auto;
+}
+
+.toast.success {
+  background: var(--accent);
+  color: var(--accent-text);
+}
+
+.toast.error {
+  background: var(--error);
+  color: #ffffff;
+  border-color: var(--error);
+}
+
+.toast.toast-out {
+  opacity: 0;
+  transform: translateY(-6px);
+  transition: opacity 0.3s, transform 0.3s;
+}
+
+@keyframes oneshare-toast-in {
+  from { opacity: 0; transform: translateY(-8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* ── Confirm dialog body ── */
+.confirm-msg {
+  font-size: 14px;
+  line-height: 1.5;
+  white-space: pre-line;
+}
+
+/* Admin panel on narrow screens: collapse the table to two columns */
+@media (max-width: 640px) {
+  .admin-th,
+  .admin-tr {
+    grid-template-columns: 1fr auto;
+  }
+  .admin-th span:nth-child(2),
+  .admin-th span:nth-child(3),
+  .admin-tr .acl-target,
+  .admin-tr .acl-perm {
+    display: none;
+  }
+  #user-table .admin-th,
+  #user-table .admin-tr {
+    grid-template-columns: 1fr auto;
+  }
+  .admin-card {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .admin-actions {
+    justify-content: flex-start;
+  }
+  .admin-search {
+    max-width: none;
+  }
 }
 
 /* ── Responsive ── */

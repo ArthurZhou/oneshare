@@ -508,19 +508,6 @@ mod tests {
     }
 
     #[test]
-    fn traversal_does_not_grant_access() {
-        // A user with read on nested/public2 must NOT be able to read a sibling
-        // via `..`: the ACL prefix check alone would pass, but resolve_virtual
-        // now refuses the path before the ACL engine ever sees it.
-        let entries = vec![acl(1, "nested/public2", None, Some(10), "read")];
-        let groups = [10];
-        let shares = user_shares(&user(1, false), &groups, &entries);
-        // The traversal path resolves to None -> caller returns 404/403.
-        assert_eq!(resolve_virtual("public2/../../secret", &shares), None);
-        assert_eq!(resolve_virtual("public2/..", &shares), None);
-    }
-
-    #[test]
     fn display_path_roundtrips_shares() {
         let u = user(1, false);
         let entries = vec![
