@@ -92,20 +92,21 @@
   // survive HTTP headers with no JS-side header patching.
 
   // ── Upload client: plan paths are per-file opaque shadows ──
-  // The SDK POSTs to `/file/{path}` for each plan entry; libfw decrypts the
-  // whole URL path, so every entry is a full shadow minted per file (via
-  // `/api/files/token`) at planning time — display dest + rel never reaches
-  // the server as a path, and the File is registered under its shadow key
-  // for `readFile`.
+  // The SDK POSTs to `/file/{path}` for each plan entry. libfw-server's
+  // `resolve_client_path` supports **hierarchical composition**: a directory
+  // shadow with literal segments appended (`{dirShadow}/sub/file`) decodes
+  // the longest decodable prefix and appends the rest verbatim, then
+  // authorizes the combined real path. So one directory shadow covers the
+  // whole subtree — plan paths are `{dirShadow}/{rel}` and no per-file
+  // tokens/shadows are minted (the upload token from the initial getToken
+  // already covers every child with prefix semantics on the decoded path).
   class OneshareLibfwClient extends LibfwClientClass {
     constructor(options) {
       super(options);
       this._uploadDest = '';
-      // Display path → opaque shadow, kept for the lifetime of the page so a
-      // retried/failed upload of the same file reuses its shadow (and token
-      // scope) instead of minting a new one — which would lose the SDK's
-      // chunk-level resume state (keys are the plan paths).
-      this._shadowCache = new Map();
+      // Directory shadow of the upload target (from the token response at
+      // transfer start) — prefix for every plan path; see class comment.
+      this._uploadDirShadow = '';
       // Shadow → display path, populated lazily while downloads run so the
       // SDK writes files/dirs under their real names instead of `v1.…`
       // shadows.
@@ -116,35 +117,24 @@
       this._leafName = null;
     }
     async _collectProvidedFiles(files) {
-      // Every plan entry must be an opaque FULL shadow of its real path: the
-      // embedded libfw server decrypts the entire URL path with the AES codec,
-      // so it cannot append literal segments to a directory shadow. Mint one
-      // per-file shadow via `/api/files/token` and use it as the plan path.
-      // (The upload token itself — the directory token from the initial
-      // getToken — still covers every child: libfw validates on the DECODED
-      // real path with prefix semantics, `docs` ⊇ `docs/a.md`.)
       const items = Array.from(files || []);
-      const resolved = await Promise.all(items.map(async (it) => {
-        const file = it instanceof File ? it : (it && it.file);
-        if (!(file instanceof File)) return null;
-        const rel = (it && it.relPath) || file.webkitRelativePath || file.name;
-        const display = this._uploadDest ? this._uploadDest + '/' + rel : rel;
-        let shadow = this._shadowCache.get(display);
-        if (!shadow) {
-          const resp = await API.getToken(display, 'write');
-          shadow = resp.path;
-          this._shadowCache.set(display, shadow);
-        }
-        return { file, shadow };
-      }));
       const plan = [];
-      for (const r of resolved) {
-        if (!r) continue;
-        this._uploadFiles.set(r.shadow, r.file);
+      for (const it of items) {
+        const file = it instanceof File ? it : (it && it.file);
+        if (!(file instanceof File)) continue;
+        const rel = String((it && it.relPath) || file.webkitRelativePath || file.name)
+          .replace(/^\/+/, '');
+        if (!rel) continue;
+        // Compound shadow: the directory shadow + the literal relative path.
+        // The server's `decode_compound` splits at `/` until the prefix
+        // decodes, so `rel`'s own separators and special characters are fine
+        // (the SDK percent-encodes the URL path; axum decodes it back).
+        const planPath = this._uploadDirShadow ? `${this._uploadDirShadow}/${rel}` : rel;
+        this._uploadFiles.set(planPath, file);
         plan.push({
-          path: r.shadow,
-          size: r.file.size,
-          mtime: Math.floor(r.file.lastModified / 1e3),
+          path: planPath,
+          size: file.size,
+          mtime: Math.floor(file.lastModified / 1e3),
         });
       }
       plan.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
@@ -170,8 +160,11 @@
     // Folder download: shadows are minted per listing with fresh random
     // nonces, so no pre-walk can correlate names across the SDK's own `/dir`
     // requests — resolution must happen per path, lazily, from the paths the
-    // SDK actually uses (fileStart/writeChunk callbacks).
+    // SDK actually uses (fileStart/writeChunk callbacks). The root shadow is
+    // also mapped so the fallback zip archive is named after the directory
+    // (not the opaque `v1.…` shadow).
     async downloadFolder(token, filePath) {
+      if (filePath) this._ensureMapped(filePath).catch(() => {});
       return super.downloadFolder(token, filePath);
     }
 
@@ -235,6 +228,13 @@
     _downloadName(path) {
       if (this._downloadAsLeaf && this._leafName) return this._leafName;
       return super._downloadName(this._displayMap.get(path) || path);
+    }
+
+    // Name of the fallback zip archive. The SDK's default uses the raw plan
+    // path (an opaque `v1.…` shadow for a folder download), which would name
+    // the zip after the shadow — override with the resolved display path.
+    _archiveName(path) {
+      return super._archiveName(this._displayMap.get(path) || path);
     }
 
     // Copy of libfw-client's browser-download fallback with one addition:
@@ -350,6 +350,17 @@
     _chain: Promise.resolve(),
     _activeOnEvent: null,
 
+    // Per-transfer identity: `_activeId` is the transfer currently running
+    // in the engine; `_cancelledIds` holds ids of QUEUED transfers that were
+    // cancelled before they started. The historical `cancel()` hit whatever
+    // the engine happened to be doing, so pressing cancel on a queued task
+    // killed the *active* one instead. Now `cancel(id)` only ever cancels
+    // the matching transfer: the active one is aborted in the engine, a
+    // queued one is flagged and skipped when its turn comes.
+    _nextId: 1,
+    _activeId: null,
+    _cancelledIds: new Set(),
+
     // Latest tuning state (see `tuningState` above) + UI hook.
     tuning: tuningState,
     onTuningChange: null,
@@ -390,19 +401,43 @@
       return this._client;
     },
 
+    _cancelledError() {
+      const e = new Error('Transfer cancelled');
+      e.name = 'AbortError';
+      e.code = 'cancelled';
+      return e;
+    },
+
     // Run SDK operations one at a time — the WASM engine drives a single
-    // active transfer per client instance.
-    _enqueue(fn) {
-      const run = this._chain.then(() => fn());
+    // active transfer per client instance. Each transfer gets an id; a
+    // queued transfer whose id was cancelled is skipped (throws) instead of
+    // running.
+    _enqueue(id, fn) {
+      const run = this._chain.then(async () => {
+        if (this._cancelledIds.has(id)) {
+          this._cancelledIds.delete(id);
+          throw this._cancelledError();
+        }
+        this._activeId = id;
+        try {
+          return await fn();
+        } finally {
+          if (this._activeId === id) this._activeId = null;
+        }
+      });
       this._chain = run.catch(() => {});
       return run;
     },
 
-    // Upload `items` (Array<{ file, relPath }>) into `destPath` (display path).
-    upload(destPath, token, items, onEvent) {
-      return this._enqueue(async () => {
+    // Upload `items` (Array<{ file, relPath }>) into `destPath` (display
+    // path). `dirShadow` is the directory shadow from the token response —
+    // every plan path is `{dirShadow}/{rel}` (see class comment).
+    upload(destPath, token, dirShadow, items, onEvent) {
+      const id = this._nextId++;
+      return this._enqueue(id, async () => {
         const client = this._getClient(destPath);
         if (!client) throw new Error('libfw-client SDK not loaded');
+        client._uploadDirShadow = dirShadow || this._uploadDirShadow || '';
         // A file manager always wants a FRESH upload (a stale persisted
         // "upload complete" for the same path would otherwise make the SDK
         // skip a re-upload of an unchanged file). libfw-client 0.1.3 exposes
@@ -424,7 +459,8 @@
     // user-picked directory (FS API) or packed into a `.zip` browser
     // download (`downloadMode: 'auto'`).
     downloadFolder(token, dirPath, onEvent) {
-      return this._enqueue(async () => {
+      const id = this._nextId++;
+      return this._enqueue(id, async () => {
         const client = this._getClient('');
         if (!client) throw new Error('libfw-client SDK not loaded');
         // Always start a folder download fresh (stale resume offsets were the
@@ -445,7 +481,8 @@
     // via the FS API when available, else through a traditional browser
     // download (leaf filename).
     downloadFile(token, path, name, onEvent) {
-      return this._enqueue(async () => {
+      const id = this._nextId++;
+      return this._enqueue(id, async () => {
         const client = this._getClient('');
         if (!client) throw new Error('libfw-client SDK not loaded');
         // Fresh full download (same rationale as downloadFolder).
@@ -459,9 +496,17 @@
       });
     },
 
-    // Cancel the active transfer (SDK engine).
-    cancel() {
-      if (this._client) { try { this._client.cancel(); } catch (e) { /* noop */ } }
+    // Cancel a transfer by id (the explorer passes the id it got from
+    // `startTask`). With no id, cancels the active transfer only. A queued
+    // transfer is flagged and skipped when its turn comes; the active one is
+    // aborted in the engine. Other queued transfers are untouched.
+    cancel(id) {
+      if (id == null || id === this._activeId) {
+        this._cancelledIds.delete(id);
+        if (this._client) { try { this._client.cancel(); } catch (e) { /* noop */ } }
+      } else {
+        this._cancelledIds.add(id);
+      }
     },
     pause() { if (this._client) { try { this._client.pause(); } catch (e) { /* noop */ } } },
     resume() { if (this._client) { try { this._client.resume(); } catch (e) { /* noop */ } } },

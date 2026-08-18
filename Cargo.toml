@@ -20,6 +20,10 @@ percent-encoding = "2"
 sha2 = "0.10"
 base64 = "0.22"
 hmac = "0.12"
+# Constant-time signature comparison for bearer tokens (timing side channel).
+subtle = "2"
+# RSA verification of OIDC ID tokens (RS256 via the JWKS endpoint).
+ring = "0.17"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 mime_guess = "2"

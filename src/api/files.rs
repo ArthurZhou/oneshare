@@ -245,6 +245,42 @@ pub async fn list(
     }))
 }
 
+/// Reject file-management operations whose target path (or any parent
+/// component under the root) contains a symlink.
+///
+/// libfw's transfer layer already refuses symlinked uploads, but the
+/// management APIs (`mkdir`, `delete`, `rename`, `mv`) operate on real
+/// paths directly with `std::fs`, and calls like `create_dir_all` and
+/// `remove_dir_all` follow symlinks — a symlink planted inside the root
+/// would let them create/delete/rename outside it. This check walks every
+/// component of `rel` under `root` with `symlink_metadata` (never
+/// following links) and rejects the operation if any component is a
+/// symlink. A missing component (e.g. the destination of a move that does
+/// not exist yet) stops the walk early — nothing after it can exist either.
+fn ensure_no_symlink(root: &std::path::Path, rel: &str) -> Result<(), StatusCode> {
+    let mut cur = root.to_path_buf();
+    for comp in std::path::Path::new(rel).components() {
+        cur.push(comp);
+        match std::fs::symlink_metadata(&cur) {
+            Ok(md) => {
+                if md.file_type().is_symlink() {
+                    tracing::warn!(
+                        "Rejecting file operation through symlink: {}",
+                        cur.display()
+                    );
+                    return Err(StatusCode::FORBIDDEN);
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => {
+                tracing::error!("symlink check failed for {}: {}", cur.display(), e);
+                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            }
+        }
+    }
+    Ok(())
+}
+
 pub async fn delete(
     State(state): State<Arc<AppState>>,
     jar: CookieJar,
@@ -253,7 +289,9 @@ pub async fn delete(
     let ru = get_request_user(&jar, &state.db).await?;
 
     let real = resolve_checked(&state, &ru.user, &ru.groups, &body.path, Permission::Write).await?;
-    let full_path = state.config.root_dir().join(&real);
+    let root = state.config.root_dir().clone();
+    ensure_no_symlink(&root, &real)?;
+    let full_path = root.join(&real);
     if !full_path.exists() {
         return Err(StatusCode::NOT_FOUND);
     }
@@ -386,13 +424,15 @@ pub async fn rename(
     let ru = get_request_user(&jar, &state.db).await?;
 
     let real = resolve_checked(&state, &ru.user, &ru.groups, &body.path, Permission::Write).await?;
-    let old_full = state.config.root_dir().join(&real);
+    let root = state.config.root_dir().clone();
+    ensure_no_symlink(&root, &real)?;
+    let old_full = root.join(&real);
     if !old_full.exists() {
         return Err(StatusCode::NOT_FOUND);
     }
 
     // Get parent directory
-    let parent = old_full.parent().unwrap_or(state.config.root_dir());
+    let parent = old_full.parent().unwrap_or(&root);
     let new_full = parent.join(&body.new_name);
 
     // Sanity check on new name: no path separators, no `.`/`..` (which would
@@ -407,6 +447,19 @@ pub async fn rename(
         || body.new_name == ".."
     {
         return Err(StatusCode::BAD_REQUEST);
+    }
+
+    // The new name lives in the same parent (already checked above), but the
+    // target itself could be an existing symlink — refusing to rename over
+    // it keeps the rename from ever acting through a link.
+    if let Some(new_rel) = std::path::Path::new(&real).parent().and_then(|p| {
+        if p.as_os_str().is_empty() {
+            Some(std::path::PathBuf::from(&body.new_name))
+        } else {
+            Some(p.join(&body.new_name))
+        }
+    }) {
+        ensure_no_symlink(&root, &new_rel.to_string_lossy())?;
     }
 
     // Refuse to silently overwrite an existing target (data-loss guard).
@@ -432,8 +485,11 @@ pub async fn mv(
     let src_real = resolve_checked(&state, &ru.user, &ru.groups, &body.source, Permission::Write).await?;
     let dst_real = resolve_checked(&state, &ru.user, &ru.groups, &body.destination, Permission::Write).await?;
 
-    let src_full = state.config.root_dir().join(&src_real);
-    let dst_full = state.config.root_dir().join(&dst_real);
+    let root = state.config.root_dir().clone();
+    ensure_no_symlink(&root, &src_real)?;
+    ensure_no_symlink(&root, &dst_real)?;
+    let src_full = root.join(&src_real);
+    let dst_full = root.join(&dst_real);
 
     if !src_full.exists() {
         return Err(StatusCode::NOT_FOUND);
@@ -480,6 +536,17 @@ pub async fn mkdir(
     // (e.g. `public2` → real `nested/public2`); the new folder is created
     // inside the resolved real parent.
     let real = resolve_checked(&state, &ru.user, &ru.groups, &body.path, Permission::Write).await?;
+    let root = state.config.root_dir().clone();
+    // Check the parent chain AND the would-be target: `create_dir_all`
+    // follows symlinks, so a symlink in the chain (or a same-named symlink
+    // already sitting at the target) must refuse the operation.
+    ensure_no_symlink(&root, &real)?;
+    let new_rel = if real.is_empty() {
+        body.name.clone()
+    } else {
+        format!("{}/{}", real, body.name)
+    };
+    ensure_no_symlink(&root, &new_rel)?;
     let base = if real.is_empty() {
         state.config.root_dir().clone()
     } else {

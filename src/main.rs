@@ -42,7 +42,7 @@ pub struct OidcPending {
 pub const OIDC_STATE_TTL: Duration = Duration::from_secs(10 * 60);
 
 pub struct AppState {
-    pub db: Database,
+    pub db: Arc<Database>,
     pub config: Config,
     pub oidc_client: OidcClient,
     pub oidc_states: Mutex<HashMap<String, OidcPending>>,
@@ -50,6 +50,9 @@ pub struct AppState {
     pub hmac_key: String,
     /// Whether the session cookie should be marked `Secure` (HTTPS-only).
     pub secure_cookies: bool,
+    /// Rolling window of recent `/auth/login` timestamps, used to rate-limit
+    /// login starts (the OIDC state map is an in-memory DoS surface).
+    pub login_throttle: Mutex<std::collections::VecDeque<Instant>>,
     /// libfw's encrypted path codec: real storage paths ↔ opaque `v1.…`
     /// shadow paths. The token endpoint uses it to bind tokens to shadows
     /// (never real paths) and to decode shadow inputs from the client.
@@ -160,7 +163,11 @@ async fn filter_dir_listing(response: Response<Body>, codec: Arc<dyn PathCodec>)
     }
 
     let (parts, body) = response.into_parts();
-    let limit: usize = 64 * 1024 * 1024;
+    // Large listings (tens of thousands of entries) can exceed the old 64 MiB
+    // cap and fail the whole directory with a 500. 256 MiB handles ~200k
+    // entries; beyond that a 500 is still the honest answer rather than
+    // serving a listing that would silently drop filtered temp entries.
+    let limit: usize = 256 * 1024 * 1024;
     let bytes = match to_bytes(body, limit).await {
         Ok(b) => b,
         Err(_) => {
@@ -369,7 +376,7 @@ async fn main() {
 
     std::fs::create_dir_all(config.root_dir()).expect("Failed to create root dir");
 
-    let db = Database::new(config.database_url()).expect("Failed to initialize database");
+    let db = Arc::new(Database::new(config.database_url()).expect("Failed to initialize database"));
 
     let oidc_client = crate::auth::oidc::OidcClient::new(&config.oidc)
         .await
@@ -418,8 +425,29 @@ async fn main() {
         session_manager,
         hmac_key: hmac_secret,
         secure_cookies: config.server.session_cookie_secure,
+        login_throttle: Mutex::new(std::collections::VecDeque::new()),
         path_codec: Arc::new(codec),
     });
+
+    // Periodic cleanup of expired sessions (rows with expires_at in the past
+    // are never removed otherwise, so the sessions table would grow forever).
+    {
+        let db = state.db.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(Duration::from_secs(3600));
+            loop {
+                tick.tick().await;
+                match db.delete_expired_sessions() {
+                    Ok(n) => {
+                        if n > 0 {
+                            tracing::info!("Expired session cleanup removed {n} rows");
+                        }
+                    }
+                    Err(e) => tracing::warn!("Expired session cleanup failed: {e}"),
+                }
+            }
+        });
+    }
 
     // libfw 0.3.4 ships a built-in stale session-temp sweeper
     // (`spawn_stale_session_cleanup`): the concurrent upload protocol leaves a
@@ -451,7 +479,7 @@ async fn main() {
     let mut app = Router::new()
         .route("/auth/login", get(api::auth::login))
         .route("/auth/callback", get(api::auth::callback))
-        .route("/auth/logout", get(api::auth::logout))
+        .route("/auth/logout", post(api::auth::logout))
         .route("/api/me", get(api::auth::me))
         .route("/api/files/list", get(api::files::list))
         .route("/api/files/delete", delete(api::files::delete))

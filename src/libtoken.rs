@@ -67,7 +67,11 @@ pub fn verify_token(hmac_key: &str, token: &str) -> Result<TokenPayload, String>
         .split_once('.')
         .ok_or_else(|| "Invalid token format".to_string())?;
 
-    // Verify HMAC
+    // Verify HMAC. The signature comparison must be constant-time: the
+    // token is a bearer credential for file access, and a plain `!=` on the
+    // base64 strings leaks byte-by-byte equality through timing. Both sides
+    // are the same length (base64 of a SHA-256 HMAC), so a length check is
+    // unnecessary — `ct_eq` alone is correct.
     let mut mac = HmacSha256::new_from_slice(hmac_key.as_bytes())
         .map_err(|e| format!("HMAC init error: {}", e))?;
     mac.update(payload_b64.as_bytes());
@@ -76,7 +80,8 @@ pub fn verify_token(hmac_key: &str, token: &str) -> Result<TokenPayload, String>
     let expected_sig_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .encode(expected_sig.into_bytes());
 
-    if sig_b64 != expected_sig_b64 {
+    use subtle::ConstantTimeEq;
+    if sig_b64.as_bytes().ct_eq(expected_sig_b64.as_bytes()).unwrap_u8() != 1 {
         return Err("Token signature mismatch".to_string());
     }
 

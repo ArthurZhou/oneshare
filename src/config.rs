@@ -228,6 +228,9 @@ pub struct OidcConfig {
     /// Optional: userinfo endpoint override.
     /// If not set, discovered from {issuer_url}/.well-known/openid-configuration.
     pub userinfo_endpoint: Option<String>,
+    /// Optional: JWKS URI override (ID token signature verification keys).
+    /// If not set, discovered from {issuer_url}/.well-known/openid-configuration.
+    pub jwks_uri: Option<String>,
 }
 
 impl Config {

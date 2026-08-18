@@ -258,6 +258,19 @@ impl Database {
         Ok(())
     }
 
+    /// Remove sessions whose `expires_at` is in the past (called on a timer
+    /// by the server; sessions are never read after expiry anyway, this just
+    /// keeps the table from growing without bound). Returns the number of
+    /// deleted rows.
+    pub fn delete_expired_sessions(&self) -> Result<usize, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let n = conn.execute(
+            "DELETE FROM sessions WHERE expires_at <= datetime('now')",
+            [],
+        )?;
+        Ok(n)
+    }
+
     // ── Groups ──
 
     pub fn list_groups(&self) -> Result<Vec<GroupRow>, rusqlite::Error> {

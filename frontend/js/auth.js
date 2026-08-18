@@ -18,10 +18,15 @@ function updateUserUI() {
   const el = document.getElementById('user-info');
   if (!el) return;
   if (currentUser) {
+    // Logout is a POST (not a link): a GET logout endpoint is CSRF-able by
+    // any page that can make the browser navigate to it (image tags, etc.).
+    // POST with SameSite cookies is not cross-site triggerable.
     el.innerHTML = `
       <span>${iconSvg('user')} ${escapeHtml(currentUser.display_name)}</span>
       ${currentUser.is_admin ? '<span class="admin-tag">(admin)</span>' : ''}
-      <a href="${API.base}/auth/logout" class="btn btn-sm">Logout</a>
+      <form action="${API.base}/auth/logout" method="post" style="display:inline">
+        <button type="submit" class="btn btn-sm">Logout</button>
+      </form>
     `;
     // Show/hide admin button
     const adminBtn = document.getElementById('btn-admin');

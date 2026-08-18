@@ -9,7 +9,17 @@ use axum::{
 use axum_extra::extract::cookie::CookieJar;
 use serde::Deserialize;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
+
+/// Rate limit for starting OIDC logins: at most this many `/auth/login`
+/// requests per window. Each login inserts an entry into the in-memory
+/// `oidc_states` map (TTL-pruned), so without a bound an unauthenticated
+/// attacker could fill memory by spamming the endpoint.
+const LOGIN_RATE_LIMIT: usize = 600;
+const LOGIN_RATE_WINDOW: Duration = Duration::from_secs(60);
+/// Hard cap on concurrent pending OIDC states (defense in depth behind the
+/// rate limit): start refusing logins when the shared map gets this large.
+const MAX_OIDC_STATES: usize = 50_000;
 
 #[derive(Deserialize, Debug)]
 pub struct CallbackQuery {
@@ -71,7 +81,35 @@ fn error_page(status: StatusCode, base: &str, title: &str, message: &str) -> Res
 
 pub async fn login(
     State(state): State<Arc<AppState>>,
-) -> impl IntoResponse {
+) -> Response {
+    // Rate limit: sliding 60s window over recent login starts. Over the cap
+    // we answer 429 instead of minting another pending state.
+    {
+        let mut recent = state.login_throttle.lock().unwrap();
+        let now = Instant::now();
+        while recent
+            .front()
+            .map(|t| now.duration_since(*t) >= LOGIN_RATE_WINDOW)
+            .unwrap_or(false)
+        {
+            recent.pop_front();
+        }
+        if recent.len() >= LOGIN_RATE_LIMIT {
+            tracing::warn!(
+                "OIDC login rate limit hit ({} in {}s); rejecting",
+                recent.len(),
+                LOGIN_RATE_WINDOW.as_secs()
+            );
+            return error_page(
+                StatusCode::TOO_MANY_REQUESTS,
+                &state.config.base_url(),
+                "Too Many Requests",
+                "Too many login attempts. Please wait a minute and try again.",
+            );
+        }
+        recent.push_back(now);
+    }
+
     let (url, csrf_state, nonce) = state.oidc_client.authorize_url();
 
     {
@@ -80,6 +118,20 @@ pub async fn login(
         // (DoS via abandoned logins).
         let now = Instant::now();
         states.retain(|_, p| now.duration_since(p.created) < crate::OIDC_STATE_TTL);
+        // Hard cap as defense in depth (even under the rate limit, a burst
+        // of legit users behind a shared NAT could fill the map).
+        if states.len() >= MAX_OIDC_STATES {
+            tracing::warn!(
+                "OIDC pending-state map full ({} entries); rejecting login",
+                states.len()
+            );
+            return error_page(
+                StatusCode::SERVICE_UNAVAILABLE,
+                &state.config.base_url(),
+                "Service Busy",
+                "Too many concurrent logins. Please try again shortly.",
+            );
+        }
         states.insert(
             csrf_state,
             crate::OidcPending {
@@ -89,7 +141,7 @@ pub async fn login(
         );
     }
 
-    Redirect::to(&url)
+    Redirect::to(&url).into_response()
 }
 
 pub async fn callback(
@@ -171,10 +223,12 @@ pub async fn callback(
         }
     }
 
-    // Step 2: exchange authorization code for tokens
+    // Step 2: exchange authorization code for tokens. The ID token is
+    // verified inside exchange_code (RS256 signature, iss/aud/exp/nonce),
+    // so the nonce we issued at /auth/login is enforced there.
     let user_info = match state
         .oidc_client
-        .exchange_code(&query.code)
+        .exchange_code(&query.code, &pending.nonce)
         .await
     {
         Ok(info) => {

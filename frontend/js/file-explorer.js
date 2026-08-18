@@ -50,6 +50,11 @@ window.addEventListener('hashchange', () => {
 
 async function loadFiles(path) {
   currentPath = path || '';
+  // Navigation always clears the stale row selection: the highlighted file
+  // no longer exists in this listing (and the selectedFile was only valid in
+  // the previous directory). Context-menu selection (openContextMenuAt) does
+  // not navigate, so it is unaffected.
+  selectedFile = null;
   const el = document.getElementById('file-list');
   try {
     const data = await API.listFiles(currentPath);
@@ -536,11 +541,10 @@ function renderTransfers() {
 //
 // Uploads go through the libfw-client SDK, which handles chunking, zstd
 // compression and x-libfw-offset resume itself. The SDK builds `/file/{path}`
-// from each plan entry, so the wrapper mints a per-file opaque shadow (via
-// `/api/files/token`) at planning time and the server's token binds the real
-// target. Resume state is persisted per path in IndexedDB by the SDK; the
-// shadow cache keeps retries of the same file on the same shadow so an
-// interrupted upload can continue.
+// from each plan entry; the wrapper prefixes every plan path with the
+// destination directory shadow (`{dirShadow}/{rel}`) and the server's
+// compound-shadow decoder resolves the real target — no per-file tokens are
+// minted. Resume state is persisted per plan path in IndexedDB by the SDK.
 // Refresh the listing shortly after an upload finishes, debounced so a batch
 // of concurrent uploads only triggers one reload.
 let uploadRefreshTimer = null;
@@ -568,17 +572,12 @@ async function handleUpload(input) {
   }
 
   // One write token for the destination; the server binds it to an opaque
-  // shadow of the real directory path. Since libfw 0.3.4 transfers over HTTP
-  // (`/file`, `/dir`), the SDK POSTs per-file shadows (minted at planning
-  // time by the wrapper) and the embedded server decrypts them to the real
-  // paths — so the client only ever sends (and sees) `v1.…` shadows, never
-  // real paths. This directory token covers the whole subtree and is the
-  // token the SDK actually sends; fetching it up front also fails fast when
-  // the user cannot write here.
-  let token;
+  // shadow of the real directory path. This directory token covers the whole
+  // subtree (the server authorizes the DECODED real path with prefix
+  // semantics); its shadow is reused as the prefix of every plan path.
+  let tokenResp;
   try {
-    const resp = await API.getToken(destPath || '/', 'write');
-    token = resp.token;
+    tokenResp = await API.getToken(destPath || '/', 'write');
   } catch (e) {
     alert('Upload denied: ' + e.message);
     return;
@@ -595,18 +594,18 @@ async function handleUpload(input) {
     error: null,
   };
   addTransfer(t);
-  t.cancel = () => Libfw.cancel();
-  t.run = () => runUploadTask(t, destPath, token, items);
+  t.cancel = () => Libfw.cancel(t.id);
+  t.run = () => runUploadTask(t, destPath, tokenResp.token, tokenResp.path, items);
   t.run();
 }
 
-async function runUploadTask(t, destPath, token, items) {
+async function runUploadTask(t, destPath, token, dirShadow, items) {
   t.status = 'active';
   t.error = null;
   t.finalizing = false;
   renderTransfers();
   try {
-    await Libfw.upload(destPath, token, items, (ev) => {
+    await Libfw.upload(destPath, token, dirShadow, items, (ev) => {
       if (ev.type === 'progress') updateTransfer(t.id, {
         done: ev.done,
         total: ev.total,
@@ -641,7 +640,7 @@ function downloadFile(path, name) {
     const tokenResp = await API.getToken(path, 'read');
     const t = { kind: 'download', name, total: 0, done: 0, status: 'active', error: null };
     addTransfer(t);
-    t.cancel = () => Libfw.cancel();
+    t.cancel = () => Libfw.cancel(t.id);
     // The SDK builds `/file/{path}` from the path we give it, which must be
     // the opaque shadow bound to the token (`tokenResp.path`) — the display
     // path we sent would fail the server's codec decode.
@@ -685,7 +684,7 @@ function downloadFolder(path, name) {
     const tokenResp = await API.getToken(path, 'read');
     const t = { kind: 'download', name, total: 0, done: 0, status: 'active', error: null };
     addTransfer(t);
-    t.cancel = () => Libfw.cancel();
+    t.cancel = () => Libfw.cancel(t.id);
     // Same as single files: the SDK walks `/dir/{path}` from this path, so
     // it must be the opaque shadow, not the display path we sent.
     t.run = () => runFolderDownloadTask(t, tokenResp.path, name, tokenResp.token);

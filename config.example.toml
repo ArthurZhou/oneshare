@@ -28,6 +28,16 @@ issuer_url = "https://login.example.com"
 client_id = "your-client-id"
 client_secret = "your-client-secret"
 redirect_uri = "http://localhost:3456/auth/callback"
+# Optional overrides for any of the OIDC endpoints (authorization_endpoint,
+# token_endpoint, userinfo_endpoint, jwks_uri). When ALL of them are set,
+# well-known discovery is skipped entirely. jwks_uri is REQUIRED for ID token
+# verification if the issuer does not support discovery: the server now
+# verifies the ID token signature (RS256 via the JWKS) plus iss/aud/exp/nonce
+# on every login, and refuses to start when it cannot obtain a JWKS.
+# authorization_endpoint = "https://login.example.com/authorize"
+# token_endpoint = "https://login.example.com/token"
+# userinfo_endpoint = "https://login.example.com/userinfo"
+# jwks_uri = "https://login.example.com/jwks"
 
 # libfw file-transfer layer. Server knobs configure the embedded libfw router;
 # client knobs are served to the browser via /config.js (window.ONESHARE_LIBFW)
