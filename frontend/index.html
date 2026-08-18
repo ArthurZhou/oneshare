@@ -15,7 +15,7 @@
   </div>
   <div class="header-right">
     <div id="user-info" class="user-info">
-      <a href="auth/login" class="btn btn-sm">Login</a>
+      <a href="auth/login" class="btn btn-sm">登录</a>
     </div>
   </div>
 </header>
@@ -23,44 +23,44 @@
 <main>
   <div id="toolbar" class="toolbar">
     <div class="toolbar-left">
-      <button id="btn-upload" class="btn btn-primary" title="Upload files"><i data-feather="upload"></i> Upload</button>
-      <button id="btn-upload-folder" class="btn" title="Upload a folder (preserves structure)"><i data-feather="folder-plus"></i> Folder</button>
-      <button id="btn-mkdir" class="btn" title="New folder"><i data-feather="folder"></i> New Folder</button>
+      <button id="btn-upload" class="btn btn-primary" title="上传文件"><i data-feather="upload"></i> 上传</button>
+      <button id="btn-upload-folder" class="btn" title="上传文件夹（保留结构）"><i data-feather="folder-plus"></i> 文件夹</button>
+      <button id="btn-mkdir" class="btn" title="新建文件夹"><i data-feather="folder"></i> 新建文件夹</button>
     </div>
     <div class="toolbar-right">
-      <button id="btn-refresh" class="btn" title="Refresh"><i data-feather="refresh-cw"></i></button>
-      <button id="btn-admin" class="btn btn-admin" title="Admin panel" style="display:none"><i data-feather="settings"></i> Admin</button>
+      <button id="btn-refresh" class="btn" title="刷新"><i data-feather="refresh-cw"></i></button>
+      <button id="btn-admin" class="btn btn-admin" title="管理员面板" style="display:none"><i data-feather="settings"></i> 管理员</button>
     </div>
   </div>
 
   <div id="file-list" class="file-list">
-    <div class="loading">Loading...</div>
+    <div class="loading">加载中...</div>
   </div>
 
   <div id="drag-overlay" class="drag-overlay" style="display:none">
-    <div class="drag-message">Drop files to upload</div>
+    <div class="drag-message">拖动文件到此处上传</div>
   </div>
 </main>
 
 <!-- Context Menu -->
 <div id="ctx-menu" class="ctx-menu" style="display:none">
-  <div class="ctx-item" data-action="download"><i data-feather="download"></i> Download</div>
-  <div class="ctx-item" data-action="rename"><i data-feather="edit-2"></i> Rename</div>
-  <div class="ctx-item" data-action="move"><i data-feather="corner-up-right"></i> Move</div>
-  <div class="ctx-item ctx-danger" data-action="delete"><i data-feather="trash-2"></i> Delete</div>
+  <div class="ctx-item" data-action="download"><i data-feather="download"></i> 下载</div>
+  <div class="ctx-item" data-action="rename"><i data-feather="edit-2"></i> 重命名</div>
+  <div class="ctx-item" data-action="move"><i data-feather="corner-up-right"></i> 移动</div>
+  <div class="ctx-item ctx-danger" data-action="delete"><i data-feather="trash-2"></i> 删除</div>
 </div>
 
 <!-- Modal -->
 <div id="modal-overlay" class="modal-overlay" style="display:none">
   <div id="modal" class="modal">
     <div class="modal-header">
-      <span id="modal-title">Modal</span>
+      <span id="modal-title">对话框</span>
       <button class="modal-close" id="modal-close"><i data-feather="x"></i></button>
     </div>
     <div id="modal-body"></div>
     <div class="modal-footer">
-      <button class="btn" id="modal-cancel">Cancel</button>
-      <button class="btn btn-primary" id="modal-ok">OK</button>
+      <button class="btn" id="modal-cancel">取消</button>
+      <button class="btn btn-primary" id="modal-ok">确定</button>
     </div>
   </div>
 </div>
@@ -68,8 +68,8 @@
 <!-- Transfers: upload/download progress with resume -->
 <div id="transfers-panel" class="transfers-panel" style="display:none">
   <div class="transfers-header">
-    <span><i data-feather="activity"></i> Transfers</span>
-    <button id="transfers-clear" class="btn btn-sm" title="Clear finished tasks"><i data-feather="x"></i></button>
+    <span><i data-feather="activity"></i> 传输</span>
+    <button id="transfers-clear" class="btn btn-sm" title="清除已完成的任务"><i data-feather="x"></i></button>
   </div>
   <div id="tuning-bar" class="tuning-bar" style="display:none">
     <span id="tuning-phase" class="tuning-phase">—</span>
@@ -89,13 +89,13 @@
 <!-- Admin Panel -->
 <div id="admin-panel" class="admin-panel" style="display:none">
   <div class="admin-header">
-    <h3><i data-feather="settings"></i> Administration</h3>
+    <h3><i data-feather="settings"></i> 管理</h3>
     <button class="modal-close" id="admin-close"><i data-feather="x"></i></button>
   </div>
   <div class="admin-tabs">
-    <button class="admin-tab active" data-tab="acl">ACL</button>
-    <button class="admin-tab" data-tab="groups">Groups</button>
-    <button class="admin-tab" data-tab="users">Users</button>
+    <button class="admin-tab active" data-tab="acl">访问控制</button>
+    <button class="admin-tab" data-tab="groups">群组</button>
+    <button class="admin-tab" data-tab="users">用户</button>
   </div>
   <div id="admin-content"></div>
 </div>

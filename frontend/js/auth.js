@@ -23,16 +23,16 @@ function updateUserUI() {
     // POST with SameSite cookies is not cross-site triggerable.
     el.innerHTML = `
       <span>${iconSvg('user')} ${escapeHtml(currentUser.display_name)}</span>
-      ${currentUser.is_admin ? '<span class="admin-tag">(admin)</span>' : ''}
+      ${currentUser.is_admin ? '<span class="admin-tag">（管理员）</span>' : ''}
       <form action="${API.base}/auth/logout" method="post" style="display:inline">
-        <button type="submit" class="btn btn-sm">Logout</button>
+        <button type="submit" class="btn btn-sm">登出</button>
       </form>
     `;
     // Show/hide admin button
     const adminBtn = document.getElementById('btn-admin');
     if (adminBtn) adminBtn.style.display = currentUser.is_admin ? '' : 'none';
   } else {
-    el.innerHTML = `<a href="${API.base}/auth/login" class="btn btn-sm">Login</a>`;
+    el.innerHTML = `<a href="${API.base}/auth/login" class="btn btn-sm">登录</a>`;
     const adminBtn = document.getElementById('btn-admin');
     if (adminBtn) adminBtn.style.display = 'none';
   }

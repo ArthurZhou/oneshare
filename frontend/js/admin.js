@@ -42,7 +42,7 @@ function confirmDialog(title, message, onConfirm) {
 
   titleEl.textContent = title;
   body.innerHTML = `<div class="confirm-msg">${escapeHtml(message)}</div>`;
-  okBtn.textContent = 'Confirm';
+  okBtn.textContent = '确认';
   okBtn.classList.add('btn-danger');
   okBtn.onclick = async () => {
     hideModal();
@@ -70,13 +70,13 @@ function wireSearch(inputId, rowSelector) {
 function setTabCount(tab, count) {
   const btn = document.querySelector(`.admin-tab[data-tab="${tab}"]`);
   if (!btn) return;
-  const base = { acl: 'ACL', groups: 'Groups', users: 'Users' }[tab] || tab;
+  const base = { acl: '访问控制', groups: '群组', users: '用户' }[tab] || tab;
   btn.textContent = `${base} (${count})`;
 }
 
 async function loadAdminPanel(tab) {
   const content = document.getElementById('admin-content');
-  content.innerHTML = '<div class="admin-loading">Loading…</div>';
+  content.innerHTML = '<div class="admin-loading">加载中…</div>';
   try {
     switch (tab) {
       case 'acl':
@@ -94,7 +94,7 @@ async function loadAdminPanel(tab) {
     }
   } catch (e) {
     content.innerHTML =
-      `<div class="admin-empty">${iconSvg('alert-circle')} Failed to load: ${escapeHtml(e.message)}</div>`;
+      `<div class="admin-empty">${iconSvg('alert-circle')} 加载失败: ${escapeHtml(e.message)}</div>`;
   }
 }
 
@@ -115,8 +115,8 @@ async function renderAclPanel() {
       <span class="acl-target">${icon} ${name} <span class="acl-type">${type}</span></span>
       <span class="acl-perm perm ${escapeHtml(entry.permission)}">${escapeHtml(entry.permission)}</span>
       <span class="admin-actions">
-        <button class="btn btn-sm" data-edit-acl="${entry.id}" title="Edit rule">${iconSvg('edit-2')} Edit</button>
-        <button class="btn btn-sm btn-danger" data-remove-acl="${entry.id}" title="Delete rule">${iconSvg('trash-2')}</button>
+        <button class="btn btn-sm" data-edit-acl="${entry.id}" title="编辑规则">${iconSvg('edit-2')} 编辑</button>
+        <button class="btn btn-sm btn-danger" data-remove-acl="${entry.id}" title="删除规则">${iconSvg('trash-2')}</button>
       </span>
     </div>`;
   }).join('');
@@ -125,35 +125,35 @@ async function renderAclPanel() {
   const userOpts = users.map((u) =>
     `<option value="user:${u.id}">${escapeHtml(u.display_name)}</option>`).join('');
   const groupOpts = groups.map((g) =>
-    `<option value="group:${g.id}">${escapeHtml(g.name)}${g.name === 'default' ? ' (all unassigned users)' : g.name === 'guest' ? ' (unauthenticated visitors)' : ''}</option>`).join('');
+    `<option value="group:${g.id}">${escapeHtml(g.name)}${g.name === 'default' ? ' (指分配给未分配群组的用户)' : g.name === 'guest' ? ' (未授权的访问者)' : ''}</option>`).join('');
 
   return `
     <div class="admin-toolbar">
-      <input type="text" id="acl-search" class="admin-search" placeholder="Search path or target…">
-      <span class="admin-count" id="acl-count">${aclData.length} rule${aclData.length === 1 ? '' : 's'}</span>
+      <input type="text" id="acl-search" class="admin-search" placeholder="搜索路径或目标…">
+      <span class="admin-count" id="acl-count">${aclData.length} 条规则${aclData.length === 1 ? '' : ''}</span>
     </div>
 
     <form id="acl-form" class="admin-form" autocomplete="off">
       <input type="text" id="acl-path" placeholder="/path/to/share" required>
       <select id="acl-target">
-        <option value="">— target —</option>
-        <optgroup label="Users">${userOpts}</optgroup>
-        <optgroup label="Groups">${groupOpts}</optgroup>
+        <option value="">— 选择目标 —</option>
+        <optgroup label="用户">${userOpts}</optgroup>
+        <optgroup label="群组">${groupOpts}</optgroup>
       </select>
       <select id="acl-permission">
-        <option value="read">Read</option>
-        <option value="write">Write</option>
-        <option value="admin">Admin</option>
+        <option value="read">读取</option>
+        <option value="write">写入</option>
+        <option value="admin">管理员</option>
       </select>
-      <button type="submit" class="btn btn-primary" id="acl-submit">${iconSvg('plus')} Add rule</button>
-      <button type="button" class="btn" id="acl-cancel-edit" style="display:none">Cancel</button>
+      <button type="submit" class="btn btn-primary" id="acl-submit">${iconSvg('plus')} 添加规则</button>
+      <button type="button" class="btn" id="acl-cancel-edit" style="display:none">取消</button>
     </form>
 
     <div class="admin-table">
       <div class="admin-th">
-        <span>Path</span><span>Target</span><span>Permission</span><span></span>
+        <span>路径</span><span>目标</span><span>权限</span><span></span>
       </div>
-      <div id="acl-rows">${rows || '<div class="admin-empty">No ACL rules yet — add one above.</div>'}</div>
+      <div id="acl-rows">${rows || '<div class="admin-empty">暂无访问控制规则 — 请在上方添加一条。</div>'}</div>
     </div>`;
 }
 
@@ -169,7 +169,7 @@ function wireAclEvents() {
     aclEditingId = null;
     form.reset();
     form.classList.remove('editing');
-    submit.innerHTML = `${iconSvg('plus')} Add rule`;
+    submit.innerHTML = `${iconSvg('plus')} 添加规则`;
     cancelEdit.style.display = 'none';
     document.querySelectorAll('.admin-tr.editing').forEach((r) => r.classList.remove('editing'));
   }
@@ -180,7 +180,7 @@ function wireAclEvents() {
     targetSelect.value = entry.user_id != null ? `user:${entry.user_id}` : `group:${entry.group_id}`;
     permSelect.value = entry.permission;
     form.classList.add('editing');
-    submit.innerHTML = `${iconSvg('check')} Save`;
+    submit.innerHTML = `${iconSvg('check')} 保存`;
     cancelEdit.style.display = '';
     document.querySelectorAll('.admin-tr.editing').forEach((r) => r.classList.remove('editing'));
     const row = document.querySelector(`.admin-tr[data-acl-id="${entry.id}"]`);
@@ -192,7 +192,7 @@ function wireAclEvents() {
     const path = pathInput.value.trim();
     const target = targetSelect.value;
     const perm = permSelect.value;
-    if (!path || !target) { showToast('Enter a path and pick a target', 'error'); return; }
+    if (!path || !target) { showToast('输入路径并选择目标', 'error'); return; }
 
     let userId = null, groupId = null;
     if (target.startsWith('user:')) userId = parseInt(target.slice(5), 10);
@@ -204,7 +204,7 @@ function wireAclEvents() {
       const old = aclData.find((a) => a.id === editingId);
       if (old && old.path === path && old.user_id === userId && old.group_id === groupId && old.permission === perm) {
         clearEdit();
-        showToast('No changes', 'info');
+        showToast('无变化', 'info');
         return;
       }
     }
@@ -214,10 +214,10 @@ function wireAclEvents() {
       // failure never leaves the path unprotected.
       await API.setAcl(path, userId, groupId, perm);
       if (editingId != null) await API.removeAcl(editingId);
-      showToast(editingId != null ? 'Rule updated' : 'Rule added', 'success');
+      showToast(editingId != null ? '规则已更新' : '规则已添加', 'success');
       await loadAdminPanel('acl');
     } catch (err) {
-      showToast('Error: ' + err.message, 'error');
+      showToast('错误: ' + err.message, 'error');
     }
   });
 
@@ -235,9 +235,9 @@ function wireAclEvents() {
       const id = parseInt(btn.dataset.removeAcl, 10);
       const entry = aclData.find((a) => a.id === id);
       const label = entry ? `${entry.path || '/'} → ${entry.user_name || entry.group_name}` : String(id);
-      confirmDialog('Delete ACL rule', `Delete the rule "${label}"?\nThe path will no longer be accessible through this rule.`, async () => {
+      confirmDialog('删除访问控制规则', `删除规则 "${label}" 吗?\n该路径将不再通过此规则可访问。`, async () => {
         await API.removeAcl(id);
-        showToast('Rule deleted', 'success');
+        showToast('规则已删除', 'success');
         await loadAdminPanel('acl');
       });
     });
@@ -258,9 +258,9 @@ async function renderGroupsPanel() {
     const isReserved = isDefault || isGuest;
     const count = typeof g.member_count === 'number' ? g.member_count : 0;
     const sub = [
-      `${count} member${count === 1 ? '' : 's'}`,
-      isDefault ? 'grants permissions to users in no group' : '',
-      isGuest ? 'grants permissions to unauthenticated visitors' : '',
+      `${count} 个成员${count === 1 ? '' : ''}`,
+      isDefault ? '授予权限给没有分配群组的用户' : '',
+      isGuest ? '授予权限给未授权的访问者' : '',
       g.description || '',
     ].filter(Boolean).join(' · ');
     return `<div class="admin-card">
@@ -276,25 +276,25 @@ async function renderGroupsPanel() {
         </div>
       </div>
       <span class="admin-actions">
-        <button class="btn btn-sm" data-manage-group="${g.id}" data-name="${escapeHtml(g.name)}"${isReserved ? ' disabled' : ''}>${iconSvg('user')} Manage</button>
-        ${isReserved ? '' : `<button class="btn btn-sm btn-danger" data-delete-group="${g.id}" title="Delete group">${iconSvg('trash-2')}</button>`}
+        <button class="btn btn-sm" data-manage-group="${g.id}" data-name="${escapeHtml(g.name)}"${isReserved ? ' disabled' : ''}>${iconSvg('user')} 管理</button>
+        ${isReserved ? '' : `<button class="btn btn-sm btn-danger" data-delete-group="${g.id}" title="删除群组">${iconSvg('trash-2')}</button>`}
       </span>
     </div>`;
   }).join('');
 
   return `
     <div class="admin-toolbar">
-      <input type="text" id="group-search" class="admin-search" placeholder="Search groups…">
-      <span class="admin-count" id="group-count">${groupData.length} group${groupData.length === 1 ? '' : 's'}</span>
+      <input type="text" id="group-search" class="admin-search" placeholder="搜索群组…">
+      <span class="admin-count" id="group-count">${groupData.length} 个群组${groupData.length === 1 ? '' : ''}</span>
     </div>
 
     <form id="group-form" class="admin-form" autocomplete="off">
-      <input type="text" id="group-name" placeholder="Group name" required>
-      <input type="text" id="group-desc" placeholder="Description (optional)">
-      <button type="submit" class="btn btn-primary">${iconSvg('plus')} Create group</button>
+      <input type="text" id="group-name" placeholder="群组名称" required>
+      <input type="text" id="group-desc" placeholder="描述（可选）">
+      <button type="submit" class="btn btn-primary">${iconSvg('plus')} 创建群组</button>
     </form>
 
-    <div id="group-list">${cards || '<div class="admin-empty">No groups yet.</div>'}</div>`;
+    <div id="group-list">${cards || '<div class="admin-empty">暂无群组。</div>'}</div>`;
 }
 
 function wireGroupEvents() {
@@ -302,10 +302,10 @@ function wireGroupEvents() {
     e.preventDefault();
     const name = document.getElementById('group-name').value.trim();
     const desc = document.getElementById('group-desc').value.trim();
-    if (!name) { showToast('Enter a group name', 'error'); return; }
+    if (!name) { showToast('输入群组名称', 'error'); return; }
     try {
       await API.createGroup(name, desc);
-      showToast('Group created', 'success');
+      showToast('群组已创建', 'success');
       await loadAdminPanel('groups');
     } catch (err) { showToast('Error: ' + err.message, 'error'); }
   });
@@ -315,9 +315,9 @@ function wireGroupEvents() {
       const id = parseInt(btn.dataset.deleteGroup, 10);
       const g = groupData.find((x) => x.id === id);
       const name = g ? g.name : String(id);
-      confirmDialog('Delete group', `Delete the group "${name}"? Members keep their accounts; only this group and its ACL grants are removed.`, async () => {
+      confirmDialog('删除群组', `删除群组 "${name}" 吗?成员保留他们的账户;仅丢弃此群组及其访问控制权限。`, async () => {
         await API.deleteGroup(id);
-        showToast('Group deleted', 'success');
+        showToast('群组已删除', 'success');
         await loadAdminPanel('groups');
       });
     });
@@ -338,8 +338,8 @@ async function showGroupManage(groupId, groupName) {
   const memberIds = new Set(members.map((m) => m.id));
 
   const reservedNote = isReserved
-    ? `<div class="member-summary" style="color:var(--error)">${iconSvg('lock')} Membership of "${escapeHtml(groupName)}" is managed automatically and cannot be changed.</div>`
-    : `<div class="member-summary">${members.length} of ${users.length} users are in this group</div>`;
+    ? `<div class="member-summary" style="color:var(--error)">${iconSvg('lock')} \"${escapeHtml(groupName)}\" 的成员身份是自动管理的，不能形改。</div>`
+    : `<div class="member-summary">此群组中有 ${members.length} 个(${users.length})个用户</div>`;
 
   const rows = users.slice()
     .sort((a, b) => (memberIds.has(b.id) - memberIds.has(a.id)) || a.display_name.localeCompare(b.display_name))
@@ -347,19 +347,19 @@ async function showGroupManage(groupId, groupName) {
       const isMember = memberIds.has(u.id);
       return `<div class="modal-user-row${isMember ? ' is-member' : ''}">
         <span>${iconSvg('user')} <strong>${escapeHtml(u.display_name)}</strong>
-          ${isMember ? `<span class="member-tag">${iconSvg('check')} member</span>` : ''}
+          ${isMember ? `<span class="member-tag">${iconSvg('check')} 成员</span>` : ''}
         </span>
         <button class="btn btn-sm ${isMember ? 'btn-danger' : 'btn-primary'}" ${isReserved ? 'disabled' : ''} data-toggle-membership="${u.id}" data-member="${isMember}">
-          ${isMember ? 'Remove' : '+ Add'}
+          ${isMember ? '移除' : '+ 添加'}
         </button>
       </div>`;
     }).join('');
 
   const html = `${reservedNote}
-    <input type="text" id="gm-search" class="admin-search" placeholder="Search users…" style="max-width:none;width:100%">
-    <div class="member-list-wrap">${rows || '<div class="admin-empty">No users</div>'}</div>`;
+    <input type="text" id="gm-search" class="admin-search" placeholder="搜索用户…" style="max-width:none;width:100%">
+    <div class="member-list-wrap">${rows || '<div class="admin-empty">暂无用户</div>'}</div>`;
 
-  showModal('Manage Group', html, () => hideModal());
+  showModal('管理群组', html, () => hideModal());
 
   wireSearch('gm-search', '.modal-user-row');
 
@@ -371,10 +371,10 @@ async function showGroupManage(groupId, groupName) {
       try {
         if (isMember) await API.removeUserFromGroup(userId, groupId);
         else await API.addUserToGroup(userId, groupId);
-        showToast(isMember ? 'Removed from group' : 'Added to group', 'success');
+        showToast(isMember ? '已从群组中移除' : '已添加到群组', 'success');
         hideModal();
         await showGroupManage(groupId, groupName);
-      } catch (e) { showToast('Error: ' + e.message, 'error'); }
+      } catch (e) { showToast('错误: ' + e.message, 'error'); }
     });
   });
 }
@@ -411,19 +411,19 @@ async function renderUsersPanel() {
         </span>
       </span>
       <span class="user-groups">${badges || '<span style="color:var(--muted)">—</span>'}</span>
-      <span class="user-role">${u.is_admin ? '<span class="admin-tag">admin</span>' : '<span style="color:var(--muted)">member</span>'}</span>
+      <span class="user-role">${u.is_admin ? '<span class="admin-tag">管理员</span>' : '<span style="color:var(--muted)">成员</span>'}</span>
     </div>`;
   }).join('');
 
   return `
     <div class="admin-toolbar">
-      <input type="text" id="user-search" class="admin-search" placeholder="Search users…">
-      <span class="admin-count" id="user-count">${userData.length} user${userData.length === 1 ? '' : 's'}</span>
+      <input type="text" id="user-search" class="admin-search" placeholder="搜索用户…">
+      <span class="admin-count" id="user-count">${userData.length} 个用户${userData.length === 1 ? '' : ''}</span>
     </div>
 
     <div class="admin-table" id="user-table">
-      <div class="admin-th"><span>User</span><span>Groups</span><span>Role</span></div>
-      <div id="user-rows">${rows || '<div class="admin-empty">No users</div>'}</div>
+      <div class="admin-th"><span>用户</span><span>群组</span><span>角色</span></div>
+      <div id="user-rows">${rows || '<div class="admin-empty">暂无用户</div>'}</div>
     </div>`;
 }
 

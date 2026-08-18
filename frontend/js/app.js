@@ -54,7 +54,7 @@ function setupEventListeners() {
 
   // New folder button
   document.getElementById('btn-mkdir')?.addEventListener('click', () => {
-    if (!currentUser) { alert('Please login first'); return; }
+    if (!currentUser) { alert('请先登录'); return; }
     showMkdirModal();
   });
 

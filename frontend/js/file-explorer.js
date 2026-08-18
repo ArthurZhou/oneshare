@@ -63,7 +63,7 @@ async function loadFiles(path) {
     updatePathNav(data);
     updateToolbar();
   } catch (e) {
-    el.innerHTML = `<div class="empty">Error: ${escapeHtml(e.message)}</div>`;
+    el.innerHTML = `<div class="empty">错误: ${escapeHtml(e.message)}</div>`;
     // Don't keep stale state (e.g. after a 404 on an unknown hash) that could
     // wrongly enable upload/mkdir buttons.
     currentWritable = false;
@@ -86,7 +86,7 @@ function updateToolbar() {
 function updatePathNav(data) {
   const nav = document.getElementById('path-nav');
   const parts = data.current_path.split('/').filter(Boolean);
-  let html = '<a href="#" data-path="">' + iconSvg('home') + ' Home</a>';
+  let html = '<a href="#" data-path="">' + iconSvg('home') + ' 主页</a>';
   if (parts.length > 0) html += '<span class="sep">/</span>';
   let cumulative = '';
   parts.forEach((p, i) => {
@@ -112,17 +112,17 @@ function renderFiles(data) {
   const el = document.getElementById('file-list');
   if (data.entries.length === 0) {
     el.innerHTML = data.is_share_root
-      ? '<div class="empty">No shared folders — ask an admin to grant you access</div>'
-      : '<div class="empty">This folder is empty</div>';
+      ? '<div class="empty">没有共享文件夹 — 请要求管理员为您授予访问权限</div>'
+      : '<div class="empty">此文件夹为空</div>';
     return;
   }
 
   let html = `
     <div class="file-row header">
       <div class="file-icon"></div>
-      <div class="file-name">Name</div>
-      <div class="file-size">Size</div>
-      <div class="file-mtime">Modified</div>
+      <div class="file-name">名称</div>
+      <div class="file-size">大小</div>
+      <div class="file-mtime">修改时间</div>
       <div class="file-actions"></div>
     </div>`;
 
@@ -137,7 +137,7 @@ function renderFiles(data) {
         <div class="file-size">${sizeStr}</div>
         <div class="file-mtime">${escapeHtml(entry.modified)}</div>
         <div class="file-actions">
-          <button class="btn btn-sm btn-icon" data-action="download" title="${entry.is_dir ? 'Download folder' : 'Download'}">${iconSvg('download')}</button>
+          <button class="btn btn-sm btn-icon" data-action="download" title="${entry.is_dir ? '下载文件夹' : '下载'}">${iconSvg('download')}</button>
         </div>
       </div>`;
   });
@@ -409,8 +409,8 @@ function transferStatusLabel(t) {
   switch (t.status) {
     case 'active': return '...';
     case 'done': return `${iconSvg('check')} done`;
-    case 'error': return `${iconSvg('alert-circle')} failed`;
-    case 'cancelled': return `${iconSvg('x')} cancelled`;
+    case 'error': return `${iconSvg('alert-circle')} 失败`;
+    case 'cancelled': return `${iconSvg('x')} 已取消`;
     default: return '';
   }
 }
@@ -505,12 +505,12 @@ function renderTransfers() {
     const finalizing = t.status === 'active' && !!t.finalizing;
     const finished = done || t.status === 'error' || t.status === 'cancelled';
     const action = finished
-      ? `<button class="btn btn-sm" data-xfer-remove="${t.id}" title="Remove">${iconSvg('x')}</button>`
-      : `<button class="btn btn-sm" data-xfer-cancel="${t.id}" title="Cancel">${iconSvg('x')}</button>`;
+      ? `<button class="btn btn-sm" data-xfer-remove="${t.id}" title="移除">${iconSvg('x')}</button>`
+      : `<button class="btn btn-sm" data-xfer-cancel="${t.id}" title="取消">${iconSvg('x')}</button>`;
     const arrow = iconSvg(t.kind === 'upload' ? 'upload' : 'download');
     const sub = t.kind === 'upload'
-      ? `Upload · ${formatSize(t.total)}`
-      : 'Download';
+      ? `上传 · ${formatSize(t.total)}`
+      : '下载';
     const pctVal = done ? 100 : (finalizing ? finalizingPct(t) : transferPct(t));
     return `
       <div class="transfer-row">
@@ -567,7 +567,7 @@ async function handleUpload(input) {
 
   const destPath = currentPath || '';
   if (!currentWritable) {
-    alert('Upload is not allowed in this folder');
+    alert('此文件夹不允许上传');
     return;
   }
 
@@ -579,7 +579,7 @@ async function handleUpload(input) {
   try {
     tokenResp = await API.getToken(destPath || '/', 'write');
   } catch (e) {
-    alert('Upload denied: ' + e.message);
+    alert('上传被拒绝: ' + e.message);
     return;
   }
 
@@ -646,7 +646,7 @@ function downloadFile(path, name) {
     // path we sent would fail the server's codec decode.
     t.run = () => runFileDownloadTask(t, tokenResp.path, name, tokenResp.token);
     t.run();
-  })().catch(e => alert('Download denied: ' + e.message));
+  })().catch(e => alert('下载被拒绝: ' + e.message));
 }
 
 async function runFileDownloadTask(t, path, name, token) {
@@ -722,8 +722,8 @@ async function runFolderDownloadTask(t, path, name, token) {
 }
 
 function showRenameModal(file) {
-  showModal('Rename', `
-    <label>New name for "${escapeHtml(file.name)}":</label>
+  showModal('重命名', `
+    <label>为 "${escapeHtml(file.name)}" 新建名称:</label>
     <input type="text" id="rename-input" value="${escapeHtml(file.name)}">
   `, async () => {
     const newName = document.getElementById('rename-input').value.trim();
@@ -733,7 +733,7 @@ function showRenameModal(file) {
       loadFiles(currentPath);
       hideModal();
     } catch (e) {
-      alert('Rename failed: ' + e.message);
+      alert('重命名失败: ' + e.message);
     }
   });
 }
@@ -742,8 +742,8 @@ function showMoveModal(file) {
   // The destination is entered in the current path space (virtual for
   // non-admins, real for admins); the server resolves it to a real path.
   const placeholder = currentPath ? currentPath + '/' : '/';
-  showModal('Move', `
-    <label>Move "${escapeHtml(file.name)}" to:</label>
+  showModal('移动', `
+    <label>移动 "${escapeHtml(file.name)}" 到:</label>
     <input type="text" id="move-input" placeholder="/path/to/destination" value="${escapeHtml(placeholder)}">
   `, async () => {
     const destDir = document.getElementById('move-input').value.trim().replace(/\/$/, '');
@@ -754,22 +754,22 @@ function showMoveModal(file) {
       loadFiles(currentPath);
       hideModal();
     } catch (e) {
-      alert('Move failed: ' + e.message);
+      alert('移动失败: ' + e.message);
     }
   });
 }
 
 function showDeleteConfirm(file) {
-  showModal('Delete', `
-    <p>Are you sure you want to delete "${escapeHtml(file.name)}"?</p>
-    ${file.isDir ? '<p style="color:var(--error);font-size:0.85em">This will delete the entire folder and all its contents!</p>' : ''}
+  showModal('删除', `
+    <p>确定要删除 "${escapeHtml(file.name)}" 吗?</p>
+    ${file.isDir ? '<p style="color:var(--error);font-size:0.85em">这将删除整个文件夹及其所有内容！</p>' : ''}
   `, async () => {
     try {
       await API.deleteFile(file.path);
       loadFiles(currentPath);
       hideModal();
     } catch (e) {
-      alert('Delete failed: ' + e.message);
+      alert('删除失败: ' + e.message);
     }
   });
 }
@@ -777,9 +777,9 @@ function showDeleteConfirm(file) {
 // ── New folder ──
 
 function showMkdirModal() {
-  showModal('New Folder', `
-    <label>Folder name:</label>
-    <input type="text" id="mkdir-input" placeholder="New folder">
+  showModal('新建文件夹', `
+    <label>文件夹名称:</label>
+    <input type="text" id="mkdir-input" placeholder="新文件夹">
   `, async () => {
     const name = document.getElementById('mkdir-input').value.trim();
     if (!name) return;
@@ -788,7 +788,7 @@ function showMkdirModal() {
       loadFiles(currentPath);
       hideModal();
     } catch (e) {
-      alert('Create folder failed: ' + e.message);
+      alert('创建文件夹失败: ' + e.message);
     }
   });
 }
@@ -1185,7 +1185,7 @@ function hideModal() {
   // modal starts in its default state, however this modal was dismissed.
   const okBtn = document.getElementById('modal-ok');
   if (okBtn) {
-    okBtn.textContent = 'OK';
+    okBtn.textContent = '确定';
     okBtn.classList.remove('btn-danger');
   }
 }
