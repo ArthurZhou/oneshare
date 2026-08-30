@@ -222,32 +222,34 @@ async fn filter_dir_listing(response: Response<Body>, codec: Arc<dyn PathCodec>)
     Response::from_parts(parts, body)
 }
 
-/// Rewrite libfw's public `/capabilities` advertisement so the browser SDK's
-/// adaptive-tuning engine never exceeds the values configured in `[libfw]`.
+/// Rewrite libfw's public `/capabilities` advertisement so the values
+/// configured in `[libfw]` are used EXACTLY by the browser SDK's tuning
+/// engine.
 ///
-/// The operator's `[libfw]` settings are the tuning UPPER BOUND: we advertise
-/// them as the `max` of each knob (`concurrency`, `uploadWindow`,
-/// `downloadWindow`, `chunkSize`), so the engine may ramp anywhere within the
-/// advertised `[min, max]` range but can never go above the configured value.
-/// This bounds the auto-tuner to the settings the operator chose, instead of
-/// libfw's hard-coded maximums (e.g. concurrency 16 / chunk 8 MiB).
+/// The tuning engine starts its ramp at the advertised `min`, so with the
+/// stock advertisement it overrides the operator's `concurrency`/
+/// `uploadWindow`/`downloadWindow`/`chunkSize` (e.g. it starts at concurrency
+/// 1 instead of the configured 4, which the user observed as the config "not
+/// taking effect"). Advertising each knob as a pinned range
+/// (`min == default == max == configured`) makes the engine use precisely the
+/// configured value, so the operator's settings actually apply.
 #[derive(Clone)]
 struct CapabilitiesRewrite<S> {
     inner: S,
-    max_concurrency: u32,
-    max_upload_window: u32,
-    max_download_window: u32,
-    max_chunk_size: u64,
+    pin_concurrency: u32,
+    pin_upload_window: u32,
+    pin_download_window: u32,
+    pin_chunk_size: u64,
 }
 
 impl<S> CapabilitiesRewrite<S> {
     fn new(inner: S, cfg: &crate::config::LibfwConfig) -> Self {
         Self {
             inner,
-            max_concurrency: cfg.concurrency.max(1),
-            max_upload_window: cfg.upload_window.max(1),
-            max_download_window: cfg.download_window.max(1),
-            max_chunk_size: cfg.chunk_size.max(1),
+            pin_concurrency: cfg.concurrency.max(1),
+            pin_upload_window: cfg.upload_window.max(1),
+            pin_download_window: cfg.download_window.max(1),
+            pin_chunk_size: cfg.chunk_size.max(1),
         }
     }
 }
@@ -268,20 +270,20 @@ where
 
     fn call(&mut self, req: Request<B>) -> Self::Future {
         let is_caps = req.uri().path() == "/capabilities";
-        let max_concurrency = self.max_concurrency;
-        let max_upload_window = self.max_upload_window;
-        let max_download_window = self.max_download_window;
-        let max_chunk_size = self.max_chunk_size;
+        let pin_concurrency = self.pin_concurrency;
+        let pin_upload_window = self.pin_upload_window;
+        let pin_download_window = self.pin_download_window;
+        let pin_chunk_size = self.pin_chunk_size;
         let fut = self.inner.call(req);
         Box::pin(async move {
             let resp = fut.await.expect("inner service is infallible");
             if is_caps && resp.status() == StatusCode::OK {
                 return Ok(rewrite_capabilities(
                     resp,
-                    max_concurrency,
-                    max_upload_window,
-                    max_download_window,
-                    max_chunk_size,
+                    pin_concurrency,
+                    pin_upload_window,
+                    pin_download_window,
+                    pin_chunk_size,
                 )
                 .await);
             }
@@ -290,15 +292,15 @@ where
     }
 }
 
-/// Parse `/capabilities` JSON and cap the tuning maximums at the configured
+/// Parse `/capabilities` JSON and pin the tuning knobs to the configured
 /// `[libfw]` values. Always returns a response: the rewritten doc on success,
 /// or the original passthrough when the body cannot be parsed/rewritten.
 async fn rewrite_capabilities(
     resp: Response<Body>,
-    max_concurrency: u32,
-    max_upload_window: u32,
-    max_download_window: u32,
-    max_chunk_size: u64,
+    pin_concurrency: u32,
+    pin_upload_window: u32,
+    pin_download_window: u32,
+    pin_chunk_size: u64,
 ) -> Response<Body> {
     use axum::body::to_bytes;
     use axum::http::header;
@@ -317,10 +319,10 @@ async fn rewrite_capabilities(
         return passthrough(bytes.to_vec());
     };
 
-    set_max(limits, "concurrency", max_concurrency as i64);
-    set_max(limits, "uploadWindow", max_upload_window as i64);
-    set_max(limits, "downloadWindow", max_download_window as i64);
-    set_max(limits, "chunkSize", max_chunk_size as i64);
+    pin_knob(limits, "concurrency", pin_concurrency as i64);
+    pin_knob(limits, "uploadWindow", pin_upload_window as i64);
+    pin_knob(limits, "downloadWindow", pin_download_window as i64);
+    pin_knob(limits, "chunkSize", pin_chunk_size as i64);
 
     let rewritten = serde_json::to_vec(&value).unwrap_or_else(|_| bytes.to_vec());
     Response::builder()
@@ -330,33 +332,25 @@ async fn rewrite_capabilities(
         .unwrap_or_else(|_| passthrough(bytes.to_vec()))
 }
 
-/// Set the `max` of a `/capabilities` `limits.<key>` object to the configured
-/// value (the tuning upper bound), if the knob is present.
+/// Pin a `/capabilities` `limits.<key>` knob to the configured value by
+/// advertising `min == default == max == value`, so libfw's tuning engine uses
+/// exactly that value (it cannot ramp below or above it). This is what makes
+/// the operator's `[libfw]` settings actually take effect instead of being
+/// overridden by the auto-tuner's ramp.
 ///
-/// Two invariants are preserved so the advertised range stays consistent for
-/// libfw's tuning engine:
-///   1. `max` never drops below `min` — libfw's capabilities parser panics
-///      with "min > max" (libfw-core `capabilities.rs`) when a limit is
-///      inverted.
-///   2. `default` is clamped back into `[min, max]`. libfw advertises defaults
-///      that can exceed the operator's configured max (e.g. `uploadWindow`
-///      default 8 vs a configured max of 4); an inconsistent range where
-///      `default > max` prevents the engine from leaving the `uninitialized`
-///      tuning phase (it never ramps and reports no stats).
-fn set_max(limits: &mut serde_json::Value, key: &str, max: i64) {
+/// Because all three fields are set to the same value the advertised range is
+/// trivially consistent (`min <= default <= max`), so libfw's capabilities
+/// parser never sees the "min > max" inversion.
+fn pin_knob(limits: &mut serde_json::Value, key: &str, value: i64) {
     let Some(item) = limits.as_object_mut().and_then(|o| o.get_mut(key)) else {
         return;
     };
     let Some(o) = item.as_object_mut() else {
         return;
     };
-    let old_min = o.get("min").and_then(|m| m.as_i64()).unwrap_or(1);
-    let new_max = max.max(old_min);
-    o.insert("max".to_string(), serde_json::json!(new_max));
-    if let Some(def) = o.get("default").and_then(|d| d.as_i64()) {
-        let new_default = def.clamp(old_min, new_max);
-        o.insert("default".to_string(), serde_json::json!(new_default));
-    }
+    o.insert("min".to_string(), serde_json::json!(value));
+    o.insert("default".to_string(), serde_json::json!(value));
+    o.insert("max".to_string(), serde_json::json!(value));
 }
 
 /// Strips a URL prefix from incoming request paths before forwarding to the
@@ -752,16 +746,18 @@ mod tests {
             .unwrap()
     }
 
-    /// The rewrite caps each knob's `max` at the configured value, never
-    /// allowing `min > max` (which libfw's capabilities parser panics on).
+    /// The rewrite pins each knob to the configured value
+    /// (`min == default == max`), so the engine uses exactly the operator's
+    /// settings, and never inverts a range (which libfw's capabilities parser
+    /// panics on).
     #[tokio::test]
-    async fn capabilities_rewrite_sets_max_and_never_inverts() {
+    async fn capabilities_rewrite_pins_configured_values() {
         let resp = rewrite_capabilities(
             caps_response(),
-            4,                // concurrency
-            4,                // uploadWindow
-            4,                // downloadWindow
-            8 * 1024 * 1024,  // chunkSize = 8 MiB
+            4,               // concurrency
+            4,               // uploadWindow
+            4,               // downloadWindow
+            8 * 1024 * 1024, // chunkSize = 8 MiB
         )
         .await;
 
@@ -786,35 +782,36 @@ mod tests {
             );
         }
 
-        // The configured values become the tuning maximums...
-        assert_eq!(limits["concurrency"]["max"].as_i64(), Some(4));
-        assert_eq!(limits["uploadWindow"]["max"].as_i64(), Some(4));
-        assert_eq!(limits["downloadWindow"]["max"].as_i64(), Some(4));
-        assert_eq!(limits["chunkSize"]["max"].as_i64(), Some(8 * 1024 * 1024));
-        // ...and the defaults are clamped back into [min, max] (uploadWindow
-        // default was 8, now 4) so the engine can initialize its tuning.
-        assert_eq!(limits["uploadWindow"]["default"].as_i64(), Some(4));
-        assert_eq!(limits["concurrency"]["default"].as_i64(), Some(4));
-        assert_eq!(limits["chunkSize"]["default"].as_i64(), Some(2 * 1024 * 1024));
+        // Every listed knob is pinned: min == default == max == configured.
+        for (key, value) in [
+            ("concurrency", 4i64),
+            ("uploadWindow", 4i64),
+            ("downloadWindow", 4i64),
+            ("chunkSize", 8 * 1024 * 1024i64),
+        ] {
+            assert_eq!(limits[key]["min"].as_i64(), Some(value), "{key}.min");
+            assert_eq!(limits[key]["default"].as_i64(), Some(value), "{key}.default");
+            assert_eq!(limits[key]["max"].as_i64(), Some(value), "{key}.max");
+        }
+
         // The (unlisted) download chunk keeps libfw's own defaults untouched.
         assert_eq!(limits["downloadChunkSize"]["max"].as_i64(), Some(4 * 1024 * 1024));
         assert_eq!(limits["downloadChunkSize"]["min"].as_i64(), Some(65536));
         assert_eq!(limits["downloadChunkSize"]["default"].as_i64(), Some(262144));
     }
 
-    /// A configured value below libfw's advertised minimum never inverts the
-    /// knob: the `max` is clamped up to the `min`.
+    /// Pinning to a value below libfw's advertised minimum is still safe: all
+    /// three fields become that value, so the range stays consistent
+    /// (`min == default == max`) and never inverts.
     #[tokio::test]
-    async fn capabilities_rewrite_clamps_max_above_min() {
-        // Concurrency configured to 1, but libfw advertises min = 1; setting
-        // it to 1 is still valid (min == max). Use a chunk below min to prove
-        // the clamp: chunkSize.min is 262144, pass 1024.
+    async fn capabilities_rewrite_pins_small_values() {
         let resp = rewrite_capabilities(caps_response(), 1, 1, 1, 1024).await;
         let bytes = axum::body::to_bytes(resp.into_body(), 64 * 1024)
             .await
             .unwrap();
         let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         let limits = &v["limits"];
+
         for key in [
             "concurrency",
             "uploadWindow",
@@ -824,9 +821,11 @@ mod tests {
         ] {
             let mn = limits[key]["min"].as_i64().unwrap_or(i64::MAX);
             let mx = limits[key]["max"].as_i64().unwrap_or(1);
-            assert!(mn <= mx, "limits.{key} inverted after clamp");
+            assert!(mn <= mx, "limits.{key} inverted after pin");
         }
-        // chunkSize.min is 262144, so the max cannot go below that.
-        assert_eq!(limits["chunkSize"]["max"].as_i64(), Some(262144));
+        // chunkSize is pinned to 1024 across min/default/max (no clamping).
+        assert_eq!(limits["chunkSize"]["min"].as_i64(), Some(1024));
+        assert_eq!(limits["chunkSize"]["default"].as_i64(), Some(1024));
+        assert_eq!(limits["chunkSize"]["max"].as_i64(), Some(1024));
     }
 }
