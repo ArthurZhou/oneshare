@@ -1,4 +1,5 @@
 use crate::acl::{self, Permission};
+use crate::audit::{self, actions};
 use crate::auth::session::get_request_user;
 use crate::db::{AclEntryRow, UserRow};
 use crate::libtoken::issue_token;
@@ -290,6 +291,12 @@ pub async fn delete(
     let ru = get_request_user(&jar, &state.db).await?;
 
     let real = resolve_checked(&state, &ru.user, &ru.groups, &body.path, Permission::Write).await?;
+    // Refuse to act on the filesystem root itself: no UI flow produces this,
+    // and both "move the whole root into the trash" and "remove_dir_all the
+    // root" would be catastrophic.
+    if real.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
     let root = state.config.root_dir().clone();
     ensure_no_symlink(&root, &real)?;
     let full_path = root.join(&real);
@@ -300,8 +307,18 @@ pub async fn delete(
     // When a trash directory is configured, "deleting" MOVES the item into it
     // (preserving its relative path so it can be recovered). An empty
     // `trash_dir` deletes permanently, as before.
-    if let Some(trash) = state.config.trash_path() {
-        move_to_trash(&trash, &full_path, &real).map_err(|e| {
+    //
+    // EXCEPTION (by design): items that are already inside the trash are
+    // permanently removed instead of being moved deeper into the trash — a
+    // move would just shuffle them under `.trash/.trash/…` and never free
+    // any space.
+    let trash = state.config.trash_path();
+    let in_trash = trash
+        .as_ref()
+        .map(|t| is_inside_trash(t, &full_path))
+        .unwrap_or(false);
+    if let Some(trash) = trash.filter(|_| !in_trash) {
+        let target = move_to_trash(&trash, &full_path, &real).map_err(|e| {
             tracing::error!(
                 "Failed to move '{}' to trash '{}': {}",
                 full_path.display(),
@@ -310,6 +327,11 @@ pub async fn delete(
             );
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
+        let detail = match target.strip_prefix(&trash) {
+            Ok(rel) => format!("moved to trash: {}", rel.display()),
+            Err(_) => format!("moved to trash: {}", target.display()),
+        };
+        audit::record(&state.db, &ru.user, actions::DELETE, &body.path, &detail);
         return Ok(StatusCode::OK);
     }
 
@@ -325,7 +347,21 @@ pub async fn delete(
         })?;
     }
 
+    let detail = if in_trash {
+        "permanently deleted (was in trash)"
+    } else {
+        "permanently deleted"
+    };
+    audit::record(&state.db, &ru.user, actions::DELETE, &body.path, detail);
+
     Ok(StatusCode::OK)
+}
+
+/// True when `full` IS the trash directory or lies inside it. Component-based
+/// comparison, so sibling names that merely share a prefix (`data/.trash-2`)
+/// do not count as "inside".
+fn is_inside_trash(trash: &std::path::Path, full: &std::path::Path) -> bool {
+    full.starts_with(trash)
 }
 
 /// Find a non-colliding destination for `real` inside the trash directory,
@@ -473,6 +509,14 @@ pub async fn rename(
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
+    audit::record(
+        &state.db,
+        &ru.user,
+        actions::RENAME,
+        &body.path,
+        &format!("renamed to: {}", body.new_name),
+    );
+
     Ok(StatusCode::OK)
 }
 
@@ -512,6 +556,14 @@ pub async fn mv(
         tracing::error!("Failed to move: {}", e);
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
+
+    audit::record(
+        &state.db,
+        &ru.user,
+        actions::MOVE,
+        &body.source,
+        &format!("moved to: {}", body.destination),
+    );
 
     Ok(StatusCode::OK)
 }
@@ -559,6 +611,13 @@ pub async fn mkdir(
         tracing::error!("Failed to mkdir: {}", e);
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
+
+    let display_new = if body.path.is_empty() {
+        body.name.clone()
+    } else {
+        format!("{}/{}", body.path, body.name)
+    };
+    audit::record(&state.db, &ru.user, actions::MKDIR, &display_new, "");
 
     Ok(StatusCode::CREATED)
 }
@@ -750,6 +809,25 @@ pub async fn get_token(
         ttl_secs,
     );
 
+    // Audit the transfer intent: libfw handles the actual bytes, so token
+    // issuance is the one place we can attribute an upload/download to a
+    // user. The stored path is the DISPLAY path (a raw shadow input would be
+    // unreadable in the log).
+    let action = if query.op == "write" {
+        actions::TOKEN_WRITE
+    } else {
+        actions::TOKEN_READ
+    };
+    let display = acl::display_path_for(&ru.user, &ru.groups, &acl_entries, &real_path)
+        .unwrap_or_else(|| query.path.clone());
+    audit::record(
+        &state.db,
+        &ru.user,
+        action,
+        &display,
+        &format!("op={}", query.op),
+    );
+
     Ok(Json(TokenResponse {
         token,
         expires_in: ttl_secs,
@@ -887,6 +965,29 @@ mod tests {
         assert!(!src_file.exists());
         assert_eq!(std::fs::read_to_string(trash.join("a.txt")).unwrap(), "old");
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "new");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn is_inside_trash_detects_trash_contents_only() {
+        let root = temp_root("trash-inside");
+        let trash = root.join("data").join(".trash");
+        std::fs::create_dir_all(trash.join("docs")).unwrap();
+
+        // The trash dir itself and anything under it are "inside".
+        assert!(is_inside_trash(&trash, &trash));
+        assert!(is_inside_trash(&trash, &trash.join("docs")));
+        assert!(is_inside_trash(&trash, &trash.join("docs").join("a.txt")));
+
+        // Siblings that merely share a name prefix are NOT inside, and
+        // neither is the rest of the tree.
+        assert!(!is_inside_trash(&trash, &root.join("data").join(".trash-2")));
+        assert!(!is_inside_trash(
+            &trash,
+            &root.join("data").join("trash")
+        ));
+        assert!(!is_inside_trash(&trash, &root.join("data").join("docs")));
 
         let _ = std::fs::remove_dir_all(&root);
     }

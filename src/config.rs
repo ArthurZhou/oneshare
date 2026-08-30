@@ -211,6 +211,14 @@ pub struct ServerConfig {
     /// paths are used as-is.
     #[serde(default)]
     pub trash_dir: String,
+    /// Audit-log retention in days: entries older than this are pruned at
+    /// startup and then hourly. `0` keeps entries forever. Default 365.
+    #[serde(default = "default_audit_retention_days")]
+    pub audit_retention_days: u32,
+}
+
+fn default_audit_retention_days() -> u32 {
+    365
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

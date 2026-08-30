@@ -63,6 +63,19 @@ impl Database {
 
             CREATE INDEX IF NOT EXISTS idx_acl_path ON acl_entries(path);
             CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
+
+            CREATE TABLE IF NOT EXISTS audit_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+                user_id INTEGER,
+                username TEXT NOT NULL,
+                action TEXT NOT NULL,
+                path TEXT NOT NULL DEFAULT '',
+                detail TEXT NOT NULL DEFAULT ''
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_log(ts);
+            CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_log(action);
             ",
         )?;
 
@@ -524,6 +537,117 @@ impl Database {
             Ok(None)
         }
     }
+
+    // ── Audit log ──
+
+    /// Append an audit event. `ts` is filled in by SQLite (local wall-clock
+    /// time, so the admin log reads naturally). Callers route through
+    /// [`crate::audit::record`], which swallows errors — auditing must never
+    /// fail the request that produced the event.
+    pub fn insert_audit(
+        &self,
+        user_id: Option<i64>,
+        username: &str,
+        action: &str,
+        path: &str,
+        detail: &str,
+    ) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO audit_log (user_id, username, action, path, detail)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![user_id, username, action, path, detail],
+        )?;
+        Ok(())
+    }
+
+    /// A page of audit entries (newest first) plus the total count under the
+    /// same filter. `action`, when given, is an exact match; `q` is a
+    /// substring match (`LIKE %q%`) over username/path/detail.
+    pub fn list_audit(
+        &self,
+        limit: u32,
+        offset: u32,
+        action: Option<&str>,
+        q: Option<&str>,
+    ) -> Result<(i64, Vec<AuditRow>), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+
+        // Build the WHERE clause dynamically; values go through bound params.
+        let mut where_clauses: Vec<String> = Vec::new();
+        let mut bind: Vec<String> = Vec::new();
+        if let Some(a) = action.filter(|a| !a.is_empty()) {
+            where_clauses.push("action = ?".to_string());
+            bind.push(a.to_string());
+        }
+        if let Some(q) = q.map(str::trim).filter(|q| !q.is_empty()) {
+            where_clauses.push("(username LIKE ? OR path LIKE ? OR detail LIKE ?)".to_string());
+            let like = format!("%{}%", q);
+            bind.push(like.clone());
+            bind.push(like.clone());
+            bind.push(like);
+        }
+        let where_sql = if where_clauses.is_empty() {
+            String::new()
+        } else {
+            format!("WHERE {}", where_clauses.join(" AND "))
+        };
+
+        let total: i64 = {
+            let sql = format!("SELECT COUNT(*) FROM audit_log {}", where_sql);
+            // rusqlite infers parameter types from usage; LIKE needs TEXT.
+            let typed: Vec<&dyn rusqlite::ToSql> =
+                bind.iter().map(|b| b as &dyn rusqlite::ToSql).collect();
+            conn.query_row(&sql, typed.as_slice(), |r| r.get(0))?
+        };
+
+        let sql = format!(
+            "SELECT id, ts, user_id, username, action, path, detail
+             FROM audit_log {} ORDER BY id DESC LIMIT {} OFFSET {}",
+            where_sql, limit.max(1), offset.max(0)
+        );
+        let typed: Vec<&dyn rusqlite::ToSql> =
+            bind.iter().map(|b| b as &dyn rusqlite::ToSql).collect();
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt
+            .query_map(typed.as_slice(), |row| {
+                Ok(AuditRow {
+                    id: row.get(0)?,
+                    ts: row.get(1)?,
+                    user_id: row.get(2)?,
+                    username: row.get(3)?,
+                    action: row.get(4)?,
+                    path: row.get(5)?,
+                    detail: row.get(6)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok((total, rows))
+    }
+
+    /// Delete every audit entry. Returns the number of removed rows.
+    pub fn clear_audit(&self) -> Result<usize, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM audit_log", [])
+    }
+
+    /// Delete audit entries older than `days` days. `days == 0` means "keep
+    /// forever" and removes nothing. Called at startup and by the hourly
+    /// cleanup task so the table cannot grow without bound.
+    pub fn prune_audit(&self, days: u32) -> Result<usize, rusqlite::Error> {
+        if days == 0 {
+            return Ok(0);
+        }
+        let conn = self.conn.lock().unwrap();
+        // `days` is a validated u32, so interpolating it into the modifier is safe.
+        let n = conn.execute(
+            &format!(
+                "DELETE FROM audit_log WHERE ts < datetime('now', 'localtime', '-{days} days')"
+            ),
+            [],
+        )?;
+        Ok(n)
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -561,4 +685,106 @@ pub struct AclEntryRowFull {
     pub permission: String,
     pub user_name: Option<String>,
     pub group_name: Option<String>,
+}
+
+/// One audit-log entry (see the `audit_log` table).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct AuditRow {
+    pub id: i64,
+    /// Local wall-clock time at insert (`datetime('now','localtime')`).
+    pub ts: String,
+    /// Acting user's id; `None`/`-1` for anonymous (guest) actors.
+    pub user_id: Option<i64>,
+    /// Display-name snapshot — survives user deletion.
+    pub username: String,
+    /// Event kind, e.g. `login`, `delete`, `acl.set` (see src/audit.rs).
+    pub action: String,
+    /// Display path the event applies to (may be empty for non-file events).
+    pub path: String,
+    /// Free-form extra info (e.g. move destination, trash note).
+    pub detail: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_db(name: &str) -> Database {
+        let dir = std::env::temp_dir().join(format!("oneshare-audit-{}-{}", name, std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        Database::new(dir.join("test.db").to_str().unwrap()).unwrap()
+    }
+
+    #[test]
+    fn audit_insert_list_and_filter() {
+        let db = temp_db("basic");
+        db.insert_audit(Some(1), "alice", "login", "", "").unwrap();
+        db.insert_audit(None, "guest", "token.read", "docs/a.txt", "op=read")
+            .unwrap();
+        db.insert_audit(Some(2), "bob", "delete", "docs/a.txt", "permanently deleted")
+            .unwrap();
+
+        let (total, rows) = db.list_audit(10, 0, None, None).unwrap();
+        assert_eq!(total, 3);
+        // Newest first.
+        assert_eq!(rows[0].action, "delete");
+        assert_eq!(rows[2].username, "alice");
+
+        // Exact-action filter.
+        let (total, rows) = db.list_audit(10, 0, Some("token.read"), None).unwrap();
+        assert_eq!(total, 1);
+        assert_eq!(rows[0].path, "docs/a.txt");
+
+        // Substring filter over username/path/detail.
+        let (total, _) = db.list_audit(10, 0, None, Some("alice")).unwrap();
+        assert_eq!(total, 1);
+        let (total, _) = db.list_audit(10, 0, None, Some("a.txt")).unwrap();
+        assert_eq!(total, 2);
+
+        // Pagination.
+        let (total, rows) = db.list_audit(1, 1, None, None).unwrap();
+        assert_eq!(total, 3);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].action, "token.read");
+    }
+
+    #[test]
+    fn audit_clear_and_prune() {
+        let db = temp_db("prune");
+        db.insert_audit(Some(1), "alice", "login", "", "").unwrap();
+        db.insert_audit(Some(2), "bob", "delete", "x.txt", "").unwrap();
+        // Age one row artificially so retention has something to remove.
+        {
+            let conn = db.conn.lock().unwrap();
+            conn.execute(
+                "UPDATE audit_log SET ts = datetime('now', 'localtime', '-30 days') WHERE id = 1",
+                [],
+            )
+            .unwrap();
+        }
+        // days == 0 keeps everything.
+        assert_eq!(db.prune_audit(0).unwrap(), 0);
+        assert_eq!(db.prune_audit(365).unwrap(), 0);
+
+        let removed = db.prune_audit(7).unwrap();
+        assert_eq!(removed, 1);
+        // Only bob's recent entry survives.
+        let (total, rows) = db.list_audit(10, 0, None, None).unwrap();
+        assert_eq!(total, 1);
+        assert_eq!(rows[0].username, "bob");
+
+        assert_eq!(db.clear_audit().unwrap(), 1);
+        let (total, _) = db.list_audit(10, 0, None, None).unwrap();
+        assert_eq!(total, 0);
+    }
+
+    #[test]
+    fn audit_table_exists_on_migrated_db() {
+        // Database::new runs migrate(); a pre-existing DB without the table
+        // must also pick it up on next startup (CREATE TABLE IF NOT EXISTS).
+        let db = temp_db("migrate");
+        let (total, _) = db.list_audit(10, 0, None, None).unwrap();
+        assert_eq!(total, 0);
+    }
 }

@@ -1,5 +1,6 @@
 mod acl;
 mod api;
+mod audit;
 mod auth;
 mod config;
 mod db;
@@ -378,6 +379,18 @@ async fn main() {
 
     let db = Arc::new(Database::new(config.database_url()).expect("Failed to initialize database"));
 
+    // Audit-log retention: prune old entries right away so a fresh start
+    // enforces the configured window even if the server was down for a while
+    // (retention_days == 0 keeps everything).
+    match db.prune_audit(config.server.audit_retention_days) {
+        Ok(n) if n > 0 => tracing::info!(
+            "Audit log: pruned {n} entries older than {} days",
+            config.server.audit_retention_days
+        ),
+        Ok(_) => {}
+        Err(e) => tracing::warn!("Audit log pruning failed: {e}"),
+    }
+
     let oidc_client = crate::auth::oidc::OidcClient::new(&config.oidc)
         .await
         .expect("Failed to initialize OIDC client");
@@ -431,8 +444,11 @@ async fn main() {
 
     // Periodic cleanup of expired sessions (rows with expires_at in the past
     // are never removed otherwise, so the sessions table would grow forever).
+    // The same hourly tick also prunes audit entries beyond the retention
+    // window (`[server] audit_retention_days`).
     {
         let db = state.db.clone();
+        let retention_days = state.config.server.audit_retention_days;
         tokio::spawn(async move {
             let mut tick = tokio::time::interval(Duration::from_secs(3600));
             loop {
@@ -444,6 +460,16 @@ async fn main() {
                         }
                     }
                     Err(e) => tracing::warn!("Expired session cleanup failed: {e}"),
+                }
+                match db.prune_audit(retention_days) {
+                    Ok(n) => {
+                        if n > 0 {
+                            tracing::info!(
+                                "Audit log cleanup removed {n} entries older than {retention_days} days"
+                            );
+                        }
+                    }
+                    Err(e) => tracing::warn!("Audit log cleanup failed: {e}"),
                 }
             }
         });
@@ -498,6 +524,8 @@ async fn main() {
         .route("/api/admin/acl", get(api::admin::list_acl))
         .route("/api/admin/acl", post(api::admin::set_acl))
         .route("/api/admin/acl/{id}", delete(api::admin::remove_acl))
+        .route("/api/admin/audit", get(api::admin::list_audit))
+        .route("/api/admin/audit", delete(api::admin::clear_audit))
         // Frontend bootstrap config: tells the browser what URL prefix the app
         // is mounted under (window.ONESHARE_BASE), so the client can build
         // absolute URLs when served behind a reverse proxy on a shared domain.

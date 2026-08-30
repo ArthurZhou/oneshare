@@ -55,4 +55,16 @@ const API = {
   getAcl: () => API.fetch('/api/admin/acl'),
   setAcl: (path, userId, groupId, permission) => API.fetch('/api/admin/acl', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path, user_id: userId, group_id: groupId, permission }) }),
   removeAcl: (id) => API.fetch(`/api/admin/acl/${id}`, { method: 'DELETE' }),
+
+  // ── Audit log ──
+  // Paged audit entries. `params`: { limit, offset, action, q }.
+  getAudit: (params = {}) => {
+    const qs = new URLSearchParams();
+    if (params.limit != null) qs.set('limit', params.limit);
+    if (params.offset != null) qs.set('offset', params.offset);
+    if (params.action) qs.set('action', params.action);
+    if (params.q) qs.set('q', params.q);
+    return API.fetch(`/api/admin/audit?${qs.toString()}`);
+  },
+  clearAudit: () => API.fetch('/api/admin/audit', { method: 'DELETE' }),
 };

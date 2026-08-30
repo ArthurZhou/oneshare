@@ -70,7 +70,7 @@ function wireSearch(inputId, rowSelector) {
 function setTabCount(tab, count) {
   const btn = document.querySelector(`.admin-tab[data-tab="${tab}"]`);
   if (!btn) return;
-  const base = { acl: '访问控制', groups: '群组', users: '用户' }[tab] || tab;
+  const base = { acl: '访问控制', groups: '群组', users: '用户', audit: '审计日志' }[tab] || tab;
   btn.textContent = `${base} (${count})`;
 }
 
@@ -90,6 +90,10 @@ async function loadAdminPanel(tab) {
       case 'users':
         content.innerHTML = await renderUsersPanel();
         wireUserEvents();
+        break;
+      case 'audit':
+        content.innerHTML = await renderAuditPanel();
+        wireAuditEvents();
         break;
     }
   } catch (e) {
@@ -429,4 +433,128 @@ async function renderUsersPanel() {
 
 function wireUserEvents() {
   wireSearch('user-search', '#user-rows .admin-tr');
+}
+
+// ── Audit log panel ──
+//
+// Unlike the other panels this one is SERVER-paginated (the log can grow to
+// many thousands of rows), so filtering and paging hit the API instead of
+// filtering rendered DOM. State lives at module scope so switching tabs away
+// and back keeps the current page/filters.
+
+const AUDIT_PAGE_SIZE = 100;
+let auditOffset = 0;
+let auditTotal = 0;
+let auditAction = '';
+let auditQuery = '';
+
+// action key → Chinese label. Keep in sync with src/audit.rs (`actions`).
+const AUDIT_ACTIONS = [
+  ['login', '登录'],
+  ['logout', '注销'],
+  ['mkdir', '新建文件夹'],
+  ['rename', '重命名'],
+  ['move', '移动'],
+  ['delete', '删除'],
+  ['token.read', '发起下载'],
+  ['token.write', '发起上传'],
+  ['group.create', '创建群组'],
+  ['group.delete', '删除群组'],
+  ['group.member.add', '添加成员'],
+  ['group.member.remove', '移除成员'],
+  ['acl.set', '设置权限'],
+  ['acl.remove', '移除权限'],
+  ['audit.clear', '清空审计日志'],
+];
+
+function auditActionLabel(action) {
+  const found = AUDIT_ACTIONS.find(([key]) => key === action);
+  return found ? found[1] : action;
+}
+
+// Destructive events get a red badge so they stand out when scanning.
+const AUDIT_DANGER = new Set(['delete', 'acl.remove', 'group.delete', 'audit.clear']);
+
+async function renderAuditPanel() {
+  const data = await API.getAudit({
+    limit: AUDIT_PAGE_SIZE,
+    offset: auditOffset,
+    action: auditAction || undefined,
+    q: auditQuery || undefined,
+  });
+  auditTotal = data.total;
+  setTabCount('audit', auditTotal);
+
+  const rows = data.entries.map((e) => {
+    const danger = AUDIT_DANGER.has(e.action);
+    return `<div class="admin-tr audit-tr">
+      <span class="audit-ts">${escapeHtml(e.ts)}</span>
+      <span class="audit-user">${escapeHtml(e.username)}</span>
+      <span><span class="audit-action${danger ? ' audit-action-danger' : ''}">${escapeHtml(auditActionLabel(e.action))}</span></span>
+      <span class="audit-path" title="${escapeHtml(e.path)}">${escapeHtml(e.path || '')}</span>
+      <span class="audit-detail">${escapeHtml(e.detail || '')}</span>
+    </div>`;
+  }).join('');
+
+  const options = AUDIT_ACTIONS.map(([key, label]) =>
+    `<option value="${key}"${key === auditAction ? ' selected' : ''}>${label}</option>`).join('');
+  const from = auditTotal === 0 ? 0 : auditOffset + 1;
+  const to = Math.min(auditOffset + AUDIT_PAGE_SIZE, auditTotal);
+
+  return `
+    <div class="admin-toolbar">
+      <select id="audit-action" class="admin-search">
+        <option value="">全部操作</option>
+        ${options}
+      </select>
+      <input type="text" id="audit-search" class="admin-search" placeholder="搜索用户/路径/详情…" value="${escapeHtml(auditQuery)}">
+      <button class="btn btn-sm btn-danger" id="audit-clear" title="永久删除全部日志">${iconSvg('trash-2')} 清空</button>
+    </div>
+
+    <div class="admin-table" id="audit-table">
+      <div class="admin-th audit-th"><span>时间</span><span>用户</span><span>操作</span><span>路径</span><span>详情</span></div>
+      <div id="audit-rows">${rows || '<div class="admin-empty">暂无日志</div>'}</div>
+    </div>
+
+    <div class="admin-toolbar audit-pager">
+      <button class="btn btn-sm" id="audit-prev"${auditOffset === 0 ? ' disabled' : ''}>上一页</button>
+      <button class="btn btn-sm" id="audit-next"${to >= auditTotal ? ' disabled' : ''}>下一页</button>
+      <span class="admin-count">显示 ${from}–${to} 条 / 共 ${auditTotal} 条</span>
+    </div>`;
+}
+
+function wireAuditEvents() {
+  // Apply filters (action select + search box) from the start of the log.
+  const applyFilters = () => {
+    auditAction = document.getElementById('audit-action')?.value || '';
+    auditQuery = (document.getElementById('audit-search')?.value || '').trim();
+    auditOffset = 0;
+    loadAdminPanel('audit');
+  };
+  document.getElementById('audit-action')?.addEventListener('change', applyFilters);
+  document.getElementById('audit-search')?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') applyFilters();
+  });
+
+  document.getElementById('audit-prev')?.addEventListener('click', () => {
+    if (auditOffset > 0) {
+      auditOffset = Math.max(0, auditOffset - AUDIT_PAGE_SIZE);
+      loadAdminPanel('audit');
+    }
+  });
+  document.getElementById('audit-next')?.addEventListener('click', () => {
+    if (auditOffset + AUDIT_PAGE_SIZE < auditTotal) {
+      auditOffset += AUDIT_PAGE_SIZE;
+      loadAdminPanel('audit');
+    }
+  });
+
+  document.getElementById('audit-clear')?.addEventListener('click', () => {
+    confirmDialog('清空审计日志', `将永久删除全部 ${auditTotal} 条审计日志，且不可恢复。确定继续？`, async () => {
+      await API.clearAudit();
+      showToast('审计日志已清空', 'success');
+      auditOffset = 0;
+      loadAdminPanel('audit');
+    });
+  });
 }

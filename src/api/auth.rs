@@ -342,6 +342,14 @@ pub async fn callback(
 
     // Step 5: build redirect response with session cookie. Land the browser on
     // the app home (respecting the configured URL prefix, if any).
+    crate::audit::record(
+        &state.db,
+        &user,
+        crate::audit::actions::LOGIN,
+        "",
+        &format!("email={}", user_info.email),
+    );
+
     (new_jar, Redirect::to(&state.config.redirect_after_auth())).into_response()
 }
 pub async fn logout(
@@ -354,6 +362,12 @@ pub async fn logout(
         .unwrap_or_default();
 
     tracing::info!("Logout: deleting session_id={}", session_id);
+
+    // Resolve the acting user BEFORE the session row disappears so the audit
+    // entry can name them.
+    if let Ok(Some(user)) = state.db.get_session_user(&session_id) {
+        crate::audit::record(&state.db, &user, crate::audit::actions::LOGOUT, "", "");
+    }
 
     let _ = state.db.delete_session(&session_id);
 

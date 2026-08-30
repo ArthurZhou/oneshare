@@ -893,6 +893,53 @@ a:hover {
   gap: 5px;
 }
 
+/* ── Audit log rows ── */
+.audit-th,
+.admin-tr.audit-tr {
+  grid-template-columns: 150px 110px 110px 1fr 1.2fr;
+}
+
+.audit-ts {
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.audit-user {
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+/* Monochrome action badge; destructive events get the red outline. */
+.audit-action {
+  display: inline-block;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 900;
+  white-space: nowrap;
+  background: var(--secondary-bg);
+}
+
+.audit-action-danger {
+  color: var(--error);
+  background: transparent;
+  border: 1px solid var(--error);
+}
+
+.audit-path,
+.audit-detail {
+  overflow-wrap: anywhere;
+}
+
+.audit-detail {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.audit-pager {
+  margin-top: 10px;
+}
+
 /* ── Group cards ── */
 .admin-card {
   display: flex;
@@ -1122,6 +1169,21 @@ a:hover {
   .admin-th span:nth-child(3),
   .admin-tr .acl-target,
   .admin-tr .acl-perm {
+    display: none;
+  }
+  /* Audit rows keep user/action/path and drop time + detail. */
+  .audit-th,
+  .admin-tr.audit-tr {
+    grid-template-columns: auto 1fr;
+  }
+  /* Undo the generic header hiding above for the columns audit keeps. */
+  .audit-th span:nth-child(2),
+  .audit-th span:nth-child(3) {
+    display: block;
+  }
+  .audit-th span:nth-child(1),
+  .admin-tr.audit-tr .audit-ts,
+  .admin-tr.audit-tr .audit-detail {
     display: none;
   }
   #user-table .admin-th,
