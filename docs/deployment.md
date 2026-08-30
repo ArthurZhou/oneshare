@@ -43,11 +43,9 @@ Release 构建会把压缩后的前端**内嵌进二进制**（`include_str!`/`i
 ```toml
 [server]
 base_url = "/oneshare"
-
-[oidc]
-# 回调地址必须包含前缀
-redirect_uri = "https://example.com/oneshare/auth/callback"
 ```
+
+> OIDC 回调地址无需配置，会自动生成为 `{scheme}://{host}/oneshare/auth/callback`（scheme 取自 `X-Forwarded-Proto`，host 取自 `X-Forwarded-Host`/`Host`）。
 
 2. 反向代理转发**完整路径**，**不要剥掉前缀**（`proxy_pass` 末尾不带 `/`）：
 
@@ -75,7 +73,7 @@ location /oneshare/ {
 
 - 前端由 OneShare 自身提供（无 CSP 外链），通过反向代理终结 TLS 即可。
 - 通过 HTTPS 对外提供服务时，请设置 `session_cookie_secure = true`，否则浏览器（遵循 Secure 语义）可能拒绝保存会话 Cookie 导致登录失效。
-- OIDC 的 `redirect_uri` 必须使用与对外访问一致的 **https** 地址，并在 Provider 控制台登记。
+- OIDC 回调地址会根据请求来源动态生成（`{scheme}://{host}{base_url}/auth/callback`），请确保反向代理正确转发 `X-Forwarded-Proto` 与 `Host`/`X-Forwarded-Host`，并在 Provider 控制台登记该 **https** 地址。
 
 ---
 
@@ -109,4 +107,4 @@ cargo build --release          # 内嵌 ../static
 | 上传/下载被中断 | 反向代理缓冲未关闭（见上文 nginx 示例）；`timeout_ms` 过小（保持 10 分钟默认）。 |
 | 升级后页面/功能异常 | 释放浏览器缓存（Ctrl+F5）；确认前后端版本一致（单一二进制部署不存在前后端版本漂移）。 |
 | 看不到任何文件夹 | ACL 默认拒绝。请用管理员登录后到「管理」面板为对应路径配置 ACL（读/写），并确认是否用到 `default`/`guest` 分组。 |
-| 端口/前缀改动后 404 | `base_url` 与反向代理 `proxy_pass` 前缀必须一致，且 OIDC `redirect_uri` 需同步。 |
+| 端口/前缀改动后 404 | `base_url` 与反向代理 `proxy_pass` 前缀必须一致。OIDC 回调地址按请求动态生成，无需同步配置。 |

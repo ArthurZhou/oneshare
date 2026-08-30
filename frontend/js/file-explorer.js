@@ -63,6 +63,13 @@ async function loadFiles(path) {
     updatePathNav(data);
     updateToolbar();
   } catch (e) {
+    // The requested directory no longer exists (deleted, moved, or an
+    // unknown/deep-link hash): fall back to the root instead of showing a
+    // dead-end error, unless we are already at the root (avoid a loop).
+    if (e && e.status === 404 && currentPath) {
+      navigate('');
+      return;
+    }
     el.innerHTML = `<div class="empty">错误: ${escapeHtml(e.message)}</div>`;
     // Don't keep stale state (e.g. after a 404 on an unknown hash) that could
     // wrongly enable upload/mkdir buttons.
@@ -462,9 +469,13 @@ function renderTuningBar() {
   const bar = document.getElementById('tuning-bar');
   if (!bar) return;
   const t = Libfw.tuning;
-  // Show the bar once the engine has made at least one measurement; hide it
-  // if tuning is disabled entirely.
-  if (!Libfw.opts.autoTune || !t.phase) {
+  // Show the statistics bar from the START of a transfer (with the configured
+  // static values) so it is visible while transmitting, not only after the
+  // engine has finished a measurement window. It updates live as tuning
+  // `{ type: 'tuning' }` events arrive. Hide it when tuning is off or nothing
+  // is currently transferring.
+  const hasActive = transfers.some(x => x.status === 'active');
+  if (!Libfw.opts.autoTune || !hasActive) {
     bar.style.display = 'none';
     return;
   }
@@ -475,11 +486,13 @@ function renderTuningBar() {
   };
   const p = t.params || {};
   const s = t.stats || {};
-  set('tuning-phase', PHASE_LABEL[t.phase] || t.phase);
-  set('tuning-conc', p.concurrency != null ? p.concurrency : '—');
-  set('tuning-uw', p.uploadWindow != null ? p.uploadWindow : '—');
-  set('tuning-dw', p.downloadWindow != null ? p.downloadWindow : '—');
-  set('tuning-chunk', fmtChunk(p.chunkSize));
+  // Fall back to the configured values until the engine reports its own.
+  const o = Libfw.opts || {};
+  set('tuning-phase', (t.phase && PHASE_LABEL[t.phase]) || 'tuning —');
+  set('tuning-conc', p.concurrency != null ? p.concurrency : (o.concurrency != null ? o.concurrency : '—'));
+  set('tuning-uw', p.uploadWindow != null ? p.uploadWindow : (o.uploadWindow != null ? o.uploadWindow : '—'));
+  set('tuning-dw', p.downloadWindow != null ? p.downloadWindow : (o.downloadWindow != null ? o.downloadWindow : '—'));
+  set('tuning-chunk', p.chunkSize != null ? fmtChunk(p.chunkSize) : fmtChunk(o.chunkSize));
   set('tuning-rtt', s.rttMs != null ? Math.round(s.rttMs) + 'ms' : '—');
   set('tuning-mbps', s.mbps != null ? s.mbps.toFixed(1) : '—');
 }

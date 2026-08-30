@@ -27,7 +27,10 @@ trash_dir = ".trash"
 issuer_url = "https://login.example.com"
 client_id = "your-client-id"
 client_secret = "your-client-secret"
-redirect_uri = "http://localhost:3456/auth/callback"
+# NOTE: there is no redirect_uri setting. The OIDC callback URL is derived
+# automatically from each login request's scheme + Host header + base_url
+# (i.e. {scheme}://{host}{base_url}/auth/callback), so it always matches the
+# origin the user actually used — register that exact URL in your provider.
 # Optional overrides for any of the OIDC endpoints (authorization_endpoint,
 # token_endpoint, userinfo_endpoint, jwks_uri). When ALL of them are set,
 # well-known discovery is skipped entirely. jwks_uri is REQUIRED for ID token

@@ -226,7 +226,6 @@ pub struct OidcConfig {
     pub issuer_url: String,
     pub client_id: String,
     pub client_secret: String,
-    pub redirect_uri: String,
     /// Optional: authorization endpoint override.
     /// If not set, discovered from {issuer_url}/.well-known/openid-configuration.
     pub authorization_endpoint: Option<String>,

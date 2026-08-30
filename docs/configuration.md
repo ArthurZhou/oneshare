@@ -39,11 +39,12 @@ cp config.example.toml config.toml
 |-----|---------|------|
 | `issuer_url` | *（必填）* | OIDC Provider 的 Issuer URL。 |
 | `client_id` / `client_secret` | *（必填）* | 在 Provider 控制台注册的客户端凭证。 |
-| `redirect_uri` | `http://localhost:3456/auth/callback` | 回调地址。设置了 `base_url` 时**必须包含前缀**，例如 `https://example.com/oneshare/auth/callback`。 |
 | `authorization_endpoint` | *（自动发现）* | 可选覆盖授权端点。 |
 | `token_endpoint` | *（自动发现）* | 可选覆盖令牌端点。 |
 | `userinfo_endpoint` | *（自动发现）* | 可选覆盖用户信息端点。 |
 | `jwks_uri` | *（自动发现）* | 可选覆盖 JWKS 端点，用于校验 ID Token 签名。 |
+
+**回调地址（redirect_uri）**：无需配置。回调地址会根据每次登录请求的来源动态生成：`{scheme}://{host}{base_url}/auth/callback`（scheme 取自 `X-Forwarded-Proto` 或 HTTPS 标志，host 取自请求的 Host/`X-Forwarded-Host`）。因此它始终与你实际使用的来源一致，请在 Provider 控制台登记该地址（设置 `base_url` 时需包含前缀，例如 `https://example.com/oneshare/auth/callback`）。
 
 **离线启动**：当上面四个端点（`authorization_endpoint`、`token_endpoint`、`userinfo_endpoint`、`jwks_uri`）**全部**显式配置时，启动会跳过 `.well-known` 发现流程，可在无外网环境下启动（用于测试/内网部署）。
 
@@ -91,7 +92,6 @@ trash_dir = ".trash"
 issuer_url = "https://auth.example.com"
 client_id = "oneshare"
 client_secret = "your-client-secret"
-redirect_uri = "http://localhost:3456/auth/callback"
 
 [libfw]
 path_key = "用 openssl rand -hex 32 生成"

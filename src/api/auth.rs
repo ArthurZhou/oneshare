@@ -1,9 +1,10 @@
 use crate::auth::session::get_user_from_cookie;
+use crate::config::Config;
 use crate::models::CurrentUserResponse;
 use crate::AppState;
 use axum::{
     extract::{Query, State},
-    http::{header, StatusCode},
+    http::{header, HeaderMap, StatusCode},
     response::{IntoResponse, Json, Redirect, Response},
 };
 use axum_extra::extract::cookie::CookieJar;
@@ -20,6 +21,39 @@ const LOGIN_RATE_WINDOW: Duration = Duration::from_secs(60);
 /// Hard cap on concurrent pending OIDC states (defense in depth behind the
 /// rate limit): start refusing logins when the shared map gets this large.
 const MAX_OIDC_STATES: usize = 50_000;
+
+/// Derive the OIDC `redirect_uri` from the request the user actually made,
+/// because the host (and forwarded scheme/path) they use to reach the app may
+/// differ from any single static value (e.g. multiple domains or a LAN IP
+/// pointing at the same instance).
+///
+/// The callback endpoint lives at `{base_url}/auth/callback`; we rebuild that
+/// URL using the request's scheme + host so the provider bounces the browser
+/// back to the exact origin it came from. Returns `None` when no usable host
+/// header is present (an HTTP request without a Host is malformed anyway).
+fn compute_redirect_uri(headers: &HeaderMap, config: &Config) -> Option<String> {
+    // Scheme: trust `X-Forwarded-Proto` (set by a reverse proxy) so HTTPS is
+    // honored even though the app itself terminates TLS behind the proxy.
+    // Fall back to the session-cookie Secure flag as a proxy for HTTPS.
+    let scheme = headers
+        .get("x-forwarded-proto")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.split(',').next().unwrap_or("").trim())
+        .filter(|s| *s == "http" || *s == "https")
+        .unwrap_or(if config.server.session_cookie_secure {
+            "https"
+        } else {
+            "http"
+        });
+    // Host: prefer the proxy-forwarded host, then the request Host header.
+    let host = headers
+        .get("x-forwarded-host")
+        .and_then(|v| v.to_str().ok())
+        .or_else(|| headers.get(header::HOST).and_then(|v| v.to_str().ok()))
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    host.map(|host| format!("{}://{}{}/auth/callback", scheme, host, config.base_url()))
+}
 
 #[derive(Deserialize, Debug)]
 pub struct CallbackQuery {
@@ -81,7 +115,26 @@ fn error_page(status: StatusCode, base: &str, title: &str, message: &str) -> Res
 
 pub async fn login(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
 ) -> Response {
+    // Derive the redirect_uri from the request URL (host + base path + the
+    // callback suffix) rather than trusting any static config, so the user is
+    // bounced back to the exact origin they used to start the login.
+    let redirect_uri = match compute_redirect_uri(&headers, &state.config) {
+        Some(u) => u,
+        None => {
+            tracing::error!("OIDC login: request carried no usable Host header; cannot build redirect_uri");
+            return error_page(
+                StatusCode::BAD_REQUEST,
+                &state.config.base_url(),
+                "Missing Host Header",
+                "The request did not carry a Host header, so the OIDC redirect \
+                 URL could not be determined. This is usually caused by a \
+                 misconfigured reverse proxy. Please try logging in again.",
+            );
+        }
+    };
+
     // Rate limit: sliding 60s window over recent login starts. Over the cap
     // we answer 429 instead of minting another pending state.
     {
@@ -110,7 +163,7 @@ pub async fn login(
         recent.push_back(now);
     }
 
-    let (url, csrf_state, nonce) = state.oidc_client.authorize_url();
+    let (url, csrf_state, nonce) = state.oidc_client.authorize_url(&redirect_uri);
 
     {
         let mut states = state.oidc_states.lock().unwrap();
@@ -137,6 +190,7 @@ pub async fn login(
             crate::OidcPending {
                 nonce,
                 created: now,
+                redirect_uri,
             },
         );
     }
@@ -228,7 +282,7 @@ pub async fn callback(
     // so the nonce we issued at /auth/login is enforced there.
     let user_info = match state
         .oidc_client
-        .exchange_code(&query.code, &pending.nonce)
+        .exchange_code(&query.code, &pending.nonce, &pending.redirect_uri)
         .await
     {
         Ok(info) => {

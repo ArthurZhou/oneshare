@@ -30,7 +30,7 @@ cp config.example.toml config.toml
 ```
 
 编辑 `config.toml`：
-- `[oidc]` —— 你的 OIDC 提供商的 `issuer_url`、`client_id`、`client_secret`、`redirect_uri`。
+- `[oidc]` —— 你的 OIDC 提供商的 `issuer_url`、`client_id`、`client_secret`（回调地址由请求动态生成，无需设置 `redirect_uri`）。
 - `[server] hmac_secret` —— 一个强随机值（**≥ 16 字节**；否则服务器拒绝启动）。
 - `[libfw] path_key` —— 64 位十六进制 AES-256 密钥：`openssl rand -hex 32`。
 
@@ -92,8 +92,9 @@ CC=musl-gcc CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc \
 |-----|---------|-------------|
 | `issuer_url` | *（必填）* | OIDC Issuer URL |
 | `client_id` / `client_secret` | *（必填）* | OIDC 客户端凭证 |
-| `redirect_uri` | `http://localhost:3456/auth/callback` | 回调地址（设置 `base_url` 时需包含前缀） |
 | `authorization_endpoint` / `token_endpoint` / `userinfo_endpoint` / `jwks_uri` | *（自动）* | 可选端点覆盖；当**全部**设置时会跳过 `.well-known` 发现（可离线启动），并用 `jwks_uri` 校验 ID Token |
+
+回调地址（`redirect_uri`）**无需配置**：它会根据每次登录请求的来源动态生成（`{scheme}://{host}{base_url}/auth/callback`），始终与你实际使用的来源一致。请在 Provider 控制台登记该地址（设置 `base_url` 时需包含前缀）。 |
 
 ### `[libfw]`
 
@@ -118,10 +119,9 @@ CC=musl-gcc CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc \
 ```toml
 [server]
 base_url = "/oneshare"
-
-[oidc]
-redirect_uri = "https://example.com/oneshare/auth/callback"
 ```
+
+> OIDC 回调地址会自动生成为 `{scheme}://{host}/oneshare/auth/callback`（无需配置 `redirect_uri`）。
 
 ```nginx
 location /oneshare/ {

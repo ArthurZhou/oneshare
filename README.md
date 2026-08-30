@@ -30,7 +30,7 @@ cp config.example.toml config.toml
 ```
 
 Edit `config.toml`:
-- `[oidc]` — your OIDC provider's `issuer_url`, `client_id`, `client_secret`, `redirect_uri`.
+- `[oidc]` — your OIDC provider's `issuer_url`, `client_id`, `client_secret` (the callback URL is derived from the request, so there is no `redirect_uri` to set).
 - `[server] hmac_secret` — a strong random value (**≥ 16 bytes**; the server refuses to start otherwise).
 - `[libfw] path_key` — a 64-hex AES-256 key: `openssl rand -hex 32`.
 
@@ -92,8 +92,9 @@ All settings live in `config.toml`. `config.example.toml` is a fully commented t
 |-----|---------|-------------|
 | `issuer_url` | *(required)* | OIDC issuer URL |
 | `client_id` / `client_secret` | *(required)* | OIDC client credentials |
-| `redirect_uri` | `http://localhost:3456/auth/callback` | Callback URL (include `base_url` when set) |
 | `authorization_endpoint` / `token_endpoint` / `userinfo_endpoint` / `jwks_uri` | *(auto)* | Optional endpoint overrides; when **all** are set, `.well-known` discovery is skipped (offline start) and `jwks_uri` is used for ID-token verification |
+
+The callback URL (`redirect_uri`) needs **no configuration**: it is derived per-login from the request's scheme + Host header + `base_url` (`{scheme}://{host}{base_url}/auth/callback`), so it always matches the origin the user actually used. Register that exact URL in your provider (include the `base_url` prefix when set). |
 
 ### `[libfw]`
 
@@ -118,10 +119,9 @@ To mount OneShare under a sub-path of a shared domain, set `base_url` and make t
 ```toml
 [server]
 base_url = "/oneshare"
-
-[oidc]
-redirect_uri = "https://example.com/oneshare/auth/callback"
 ```
+
+> The OIDC callback URL is derived automatically as `{scheme}://{host}/oneshare/auth/callback` (no `redirect_uri` to configure).
 
 ```nginx
 location /oneshare/ {

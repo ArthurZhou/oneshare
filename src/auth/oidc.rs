@@ -60,7 +60,6 @@ pub struct OidcClient {
     client: Client,
     client_id: String,
     client_secret: String,
-    redirect_uri: String,
     /// The issuer we trust. ID tokens whose `iss` differs are rejected.
     issuer: String,
     authorization_endpoint: String,
@@ -203,7 +202,6 @@ impl OidcClient {
             client,
             client_id: config.client_id.clone(),
             client_secret: config.client_secret.clone(),
-            redirect_uri: config.redirect_uri.clone(),
             issuer: base.to_string(),
             authorization_endpoint,
             token_endpoint,
@@ -311,13 +309,17 @@ impl OidcClient {
     /// the provider and validated on the callback for replay/tamper
     /// protection. Query parameters are percent-encoded so a redirect_uri or
     /// client_id with special characters survives the round-trip.
-    pub fn authorize_url(&self) -> (String, String, String) {
+    ///
+    /// `redirect_uri` is supplied by the caller (derived from the request URL
+    /// the user actually used at login time) rather than taken from config, so
+    /// the provider redirects back to the exact host/path the user is on.
+    pub fn authorize_url(&self, redirect_uri: &str) -> (String, String, String) {
         let csrf_state = uuid::Uuid::new_v4().to_string();
         let nonce = uuid::Uuid::new_v4().to_string();
 
         let query = url::form_urlencoded::Serializer::new(String::new())
             .append_pair("client_id", &self.client_id)
-            .append_pair("redirect_uri", &self.redirect_uri)
+            .append_pair("redirect_uri", redirect_uri)
             .append_pair("response_type", "code")
             .append_pair("state", &csrf_state)
             .append_pair("nonce", &nonce)
@@ -345,7 +347,12 @@ impl OidcClient {
     /// the authorization request — replay/tamper protection). Userinfo is
     /// fetched only after verification, and its `sub` must match the ID
     /// token's `sub`.
-    pub async fn exchange_code(&self, code: &str, expected_nonce: &str) -> Result<OidcUserInfo, String> {
+    pub async fn exchange_code(
+        &self,
+        code: &str,
+        expected_nonce: &str,
+        redirect_uri: &str,
+    ) -> Result<OidcUserInfo, String> {
         tracing::debug!(
             "Exchanging authorization code: {}...",
             &code.chars().take(20).collect::<String>(),
@@ -358,7 +365,7 @@ impl OidcClient {
             s.append_pair("code", code);
             s.append_pair("client_id", &self.client_id);
             s.append_pair("client_secret", &self.client_secret);
-            s.append_pair("redirect_uri", &self.redirect_uri);
+            s.append_pair("redirect_uri", redirect_uri);
             s.finish()
         };
 

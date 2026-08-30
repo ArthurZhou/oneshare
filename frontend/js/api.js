@@ -22,7 +22,11 @@ const API = {
         throw new Error('Permission denied');
       }
       const txt = await res.text();
-      throw new Error(txt || `HTTP ${res.status}`);
+      const err = new Error(txt || `HTTP ${res.status}`);
+      // Attach the HTTP status so callers (e.g. the file explorer) can react
+      // to specific codes, like auto-falling back to the root on a 404.
+      err.status = res.status;
+      throw err;
     }
     const ct = res.headers.get('content-type') || '';
     if (ct.includes('application/json')) {

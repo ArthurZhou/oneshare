@@ -152,6 +152,15 @@
     // file should land at the ROOT of the picked directory under its own
     // (leaf) name (`leafName` is the display name from the listing row; the
     // transfer path is an opaque shadow, unusable as a filename).
+    //
+    // We keep the SDK's default `downloadMode: 'auto'`:
+    //   - FS API available → stream the file into a user-picked directory,
+    //     so arbitrarily large single files work with no in-memory cap;
+    //   - FS API unavailable → save via a normal browser download.
+    // The in-memory `maxFallbackBytes` cap only ever applies on non-FSAPI
+    // devices (the browser path), and there it is mainly relevant to FOLDER
+    // downloads (folders are buffered and zipped in memory). Single files on
+    // non-FSAPI devices use a direct browser download and need no picker.
     async downloadFile(token, filePath, leafName) {
       this._downloadAsLeaf = true;
       this._leafName = leafName || null;
