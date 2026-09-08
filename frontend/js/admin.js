@@ -147,7 +147,6 @@ async function renderAclPanel() {
       <select id="acl-permission">
         <option value="read">读取</option>
         <option value="write">写入</option>
-        <option value="admin">管理员</option>
       </select>
       <button type="submit" class="btn btn-primary" id="acl-submit">${iconSvg('plus')} 添加规则</button>
       <button type="button" class="btn" id="acl-cancel-edit" style="display:none">取消</button>
@@ -456,6 +455,7 @@ const AUDIT_ACTIONS = [
   ['rename', '重命名'],
   ['move', '移动'],
   ['delete', '删除'],
+  ['file.save', '在线保存'],
   ['token.read', '发起下载'],
   ['token.write', '发起上传'],
   ['group.create', '创建群组'],

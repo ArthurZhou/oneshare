@@ -3,16 +3,35 @@ use std::sync::Mutex;
 
 pub struct Database {
     pub conn: Mutex<Connection>,
+    /// `[server] admin_user` from the config. When set, admin status is
+    /// DERIVED from this value on every user load (matched against the
+    /// display name or OIDC subject) and never read from the database, so
+    /// granting/revoking admin is a config edit, not a DB write.
+    pub admin_user: Option<String>,
 }
 
 impl Database {
-    pub fn new(path: &str) -> Result<Self, rusqlite::Error> {
+    pub fn new(path: &str, admin_user: Option<String>) -> Result<Self, rusqlite::Error> {
         let conn = Connection::open(path)?;
         let db = Database {
             conn: Mutex::new(conn),
+            admin_user,
         };
         db.migrate()?;
         Ok(db)
+    }
+
+    /// Apply the config-defined admin to a freshly loaded user row.
+    ///
+    /// Without `admin_user` the stored `is_admin` flag (legacy "first user
+    /// becomes admin") is kept untouched. With it set, the flag is computed
+    /// fresh on every load: the database value is ignored, so config changes
+    /// take effect on the user's next request without re-login.
+    fn apply_admin_flag(&self, mut user: UserRow) -> UserRow {
+        if let Some(name) = &self.admin_user {
+            user.is_admin = (name == &user.display_name || name == &user.oidc_sub) as i64;
+        }
+        user
     }
 
     fn migrate(&self) -> Result<(), rusqlite::Error> {
@@ -56,7 +75,7 @@ impl Database {
                 path TEXT NOT NULL,
                 user_id INTEGER REFERENCES users(id),
                 group_id INTEGER REFERENCES groups_(id),
-                permission TEXT NOT NULL CHECK(permission IN ('read','write','admin')),
+                permission TEXT NOT NULL CHECK(permission IN ('read','write')),
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 CHECK (user_id IS NOT NULL OR group_id IS NOT NULL)
             );
@@ -94,6 +113,17 @@ impl Database {
         conn.execute(
             "INSERT OR IGNORE INTO groups_ (name, description)
              VALUES ('guest', 'Fallback group: applies to unauthenticated (not logged in) visitors')",
+            [],
+        )?;
+
+        // The ACL-level "admin" permission was removed (full control is the
+        // `is_admin` user flag, which bypasses ACLs entirely). Map any legacy
+        // rows to `write`, the closest remaining capability. Idempotent:
+        // re-running matches nothing. NOTE: older databases keep their original
+        // CHECK constraint (SQLite cannot ALTER one), which still accepts
+        // read/write — that is all we ever store.
+        conn.execute(
+            "UPDATE acl_entries SET permission='write' WHERE permission='admin'",
             [],
         )?;
 
@@ -165,13 +195,13 @@ impl Database {
         )?;
         let mut rows = stmt.query(params![oidc_sub])?;
         if let Some(row) = rows.next()? {
-            Ok(Some(UserRow {
+            Ok(Some(self.apply_admin_flag(UserRow {
                 id: row.get(0)?,
                 oidc_sub: row.get(1)?,
                 display_name: row.get(2)?,
                 email: row.get(3)?,
                 is_admin: row.get(4)?,
-            }))
+            })))
         } else {
             Ok(None)
         }
@@ -184,10 +214,22 @@ impl Database {
         email: &str,
     ) -> Result<UserRow, rusqlite::Error> {
         let conn = self.conn.lock().unwrap();
-        // Check if this is the very first user -> make admin
+        // Admin determination. With `[server] admin_user` configured, admin
+        // status is derived from the config on EVERY load (see
+        // `apply_admin_flag`) and is NOT authoritative in the database — the
+        // stored flag merely mirrors the config for external inspection. Only
+        // deployments without admin_user fall back to the legacy "first user
+        // becomes admin" rule.
         let user_count: i64 =
             conn.query_row("SELECT COUNT(*) FROM users", [], |r| r.get(0))?;
-        let is_admin = if user_count == 0 { 1 } else { 0 };
+        let is_admin = if self.admin_user.is_some() {
+            (self.admin_user.as_deref() == Some(display_name)
+                || self.admin_user.as_deref() == Some(oidc_sub)) as i64
+        } else if user_count == 0 {
+            1
+        } else {
+            0
+        };
 
         // Two-step update-or-insert. We deliberately avoid
         // `INSERT ... ON CONFLICT DO UPDATE`: SQLite allocates a rowid on the
@@ -222,13 +264,13 @@ impl Database {
         )?;
         let mut rows = stmt.query(params![oidc_sub])?;
         if let Some(row) = rows.next()? {
-            Ok(UserRow {
+            Ok(self.apply_admin_flag(UserRow {
                 id: row.get(0)?,
                 oidc_sub: row.get(1)?,
                 display_name: row.get(2)?,
                 email: row.get(3)?,
                 is_admin: row.get(4)?,
-            })
+            }))
         } else {
             Err(rusqlite::Error::QueryReturnedNoRows)
         }
@@ -253,13 +295,13 @@ impl Database {
         )?;
         let mut rows = stmt.query(params![session_id])?;
         if let Some(row) = rows.next()? {
-            Ok(Some(UserRow {
+            Ok(Some(self.apply_admin_flag(UserRow {
                 id: row.get(0)?,
                 oidc_sub: row.get(1)?,
                 display_name: row.get(2)?,
                 email: row.get(3)?,
                 is_admin: row.get(4)?,
-            }))
+            })))
         } else {
             Ok(None)
         }
@@ -417,13 +459,13 @@ impl Database {
         )?;
         let rows = stmt
             .query_map(params![group_id], |row| {
-                Ok(UserRow {
+                Ok(self.apply_admin_flag(UserRow {
                     id: row.get(0)?,
                     oidc_sub: row.get(1)?,
                     display_name: row.get(2)?,
                     email: row.get(3)?,
                     is_admin: row.get(4)?,
-                })
+                }))
             })?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(rows)
@@ -436,13 +478,13 @@ impl Database {
         )?;
         let rows = stmt
             .query_map([], |row| {
-                Ok(UserRow {
+                Ok(self.apply_admin_flag(UserRow {
                     id: row.get(0)?,
                     oidc_sub: row.get(1)?,
                     display_name: row.get(2)?,
                     email: row.get(3)?,
                     is_admin: row.get(4)?,
-                })
+                }))
             })?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(rows)
@@ -526,13 +568,13 @@ impl Database {
         )?;
         let mut rows = stmt.query(params![user_id])?;
         if let Some(row) = rows.next()? {
-            Ok(Some(UserRow {
+            Ok(Some(self.apply_admin_flag(UserRow {
                 id: row.get(0)?,
                 oidc_sub: row.get(1)?,
                 display_name: row.get(2)?,
                 email: row.get(3)?,
                 is_admin: row.get(4)?,
-            }))
+            })))
         } else {
             Ok(None)
         }
@@ -713,7 +755,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("oneshare-audit-{}-{}", name, std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        Database::new(dir.join("test.db").to_str().unwrap()).unwrap()
+        Database::new(dir.join("test.db").to_str().unwrap(), None).unwrap()
     }
 
     #[test]

@@ -9,6 +9,14 @@ database_url = "oneshare.db"
 # IMPORTANT: set a strong random value (>= 16 bytes). The server refuses to
 # start with the default/empty secret.
 hmac_secret = "REPLACE_WITH_A_STRONG_RANDOM_SECRET_AT_LEAST_16_BYTES"
+# Username of the instance administrator. When set, this user — matched
+# against the OIDC name/preferred_username claim (the display name shown in
+# the UI) or the OIDC `sub` — is the admin. Admin status is derived from the
+# config on every request and is NOT stored in the database, so granting or
+# revoking admin is a config edit (effective on the user's next request, no
+# re-login needed). Leave unset to keep the legacy "first user to log in
+# becomes admin" behavior.
+# admin_user = "your-username"
 # URL prefix (base path) when running behind a reverse proxy on a shared
 # domain, e.g. "/oneshare". Leave empty to serve at the domain root.
 base_url = ""

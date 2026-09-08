@@ -453,8 +453,12 @@
     // Upload `items` (Array<{ file, relPath }>) into `destPath` (display
     // path). `dirShadow` is the directory shadow from the token response —
     // every plan path is `{dirShadow}/{rel}` (see class comment).
-    upload(destPath, token, dirShadow, items, onEvent) {
+    // `onId(id)` is invoked synchronously with this transfer's ENGINE id so
+    // the UI can cancel exactly this transfer (the engine's id numbering is
+    // independent of the caller's list ids).
+    upload(destPath, token, dirShadow, items, onEvent, onId) {
       const id = this._nextId++;
+      if (typeof onId === 'function') onId(id);
       return this._enqueue(id, async () => {
         const client = this._getClient(destPath);
         if (!client) throw new Error('libfw-client SDK not loaded');
@@ -479,8 +483,9 @@
     // names, then libfw-client 0.1.3 saves how it likes: streamed into a
     // user-picked directory (FS API) or packed into a `.zip` browser
     // download (`downloadMode: 'auto'`).
-    downloadFolder(token, dirPath, onEvent) {
+    downloadFolder(token, dirPath, onEvent, onId) {
       const id = this._nextId++;
+      if (typeof onId === 'function') onId(id);
       return this._enqueue(id, async () => {
         const client = this._getClient('');
         if (!client) throw new Error('libfw-client SDK not loaded');
@@ -501,8 +506,9 @@
     // for the saved file. As with the folder case, libfw-client 0.1.3 saves
     // via the FS API when available, else through a traditional browser
     // download (leaf filename).
-    downloadFile(token, path, name, onEvent) {
+    downloadFile(token, path, name, onEvent, onId) {
       const id = this._nextId++;
+      if (typeof onId === 'function') onId(id);
       return this._enqueue(id, async () => {
         const client = this._getClient('');
         if (!client) throw new Error('libfw-client SDK not loaded');
@@ -517,8 +523,8 @@
       });
     },
 
-    // Cancel a transfer by id (the explorer passes the id it got from
-    // `startTask`). With no id, cancels the active transfer only. A queued
+    // Cancel a transfer by ENGINE id (the UI learns it via the ops' `onId`
+    // callback). With no id, cancels the active transfer only. A queued
     // transfer is flagged and skipped when its turn comes; the active one is
     // aborted in the engine. Other queued transfers are untouched.
     cancel(id) {

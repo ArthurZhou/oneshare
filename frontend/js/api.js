@@ -48,6 +48,14 @@ const API = {
   // ── libfw Token ──
   getToken: (path, op = 'read') => API.fetch(`/api/files/token?path=${encodeURIComponent(path)}&op=${op}`),
 
+  // ── File detail / inline preview / online edit ──
+  // Metadata + (for small text files) full text content for preview & editing.
+  getFileDetail: (path) => API.fetch(`/api/files/content?path=${encodeURIComponent(path)}`),
+  // Save edited text content back to the server (requires write permission).
+  saveFileContent: (path, content) => API.fetch('/api/files/content', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path, content }) }),
+  // Inline binary preview URL (<img>/<video>/<audio>); auth via session cookie.
+  rawUrl: (path) => `${API.base}/api/files/raw?path=${encodeURIComponent(path)}`,
+
   // ── Admin ──
   getUsers: () => API.fetch('/api/admin/users'),
   getGroups: () => API.fetch('/api/admin/groups'),

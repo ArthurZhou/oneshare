@@ -233,7 +233,9 @@ pub async fn set_acl(
     if user.is_admin != 1 {
         return Err(StatusCode::FORBIDDEN);
     }
-    if !matches!(body.permission.as_str(), "read" | "write" | "admin") {
+    // ACL rules grant only `read` or `write`; full control is the `is_admin`
+    // user flag, so an ACL-level "admin" value is rejected.
+    if !matches!(body.permission.as_str(), "read" | "write") {
         return Err(StatusCode::BAD_REQUEST);
     }
     if body.user_id.is_none() && body.group_id.is_none() {

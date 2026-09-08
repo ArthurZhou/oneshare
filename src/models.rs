@@ -57,6 +57,40 @@ pub struct MkdirRequest {
     pub name: String,
 }
 
+/// Query for `GET /api/files/content` (file detail + text preview) and
+/// `GET /api/files/raw` (binary inline preview).
+#[derive(Debug, Deserialize)]
+pub struct ContentQuery {
+    pub path: String,
+}
+
+/// Body of `PUT /api/files/content` (online text edit save).
+#[derive(Debug, Deserialize)]
+pub struct SaveContentRequest {
+    pub path: String,
+    pub content: String,
+}
+
+/// Response of `GET /api/files/content`: metadata plus (when the file is a
+/// small enough text file) its full text content for inline preview/editing.
+#[derive(Debug, Serialize)]
+pub struct FileContentResponse {
+    pub name: String,
+    /// Display path (same semantics as `FileEntry::path`).
+    pub path: String,
+    pub size: u64,
+    pub modified: String,
+    pub mime_type: String,
+    /// Whether the file is previewable/editable as plain text.
+    pub is_text: bool,
+    /// Whether the caller holds write permission on the file.
+    pub writable: bool,
+    /// Full text content; `None` for binary files or oversized text files.
+    pub content: Option<String>,
+    /// True when the file is textual but larger than the preview limit.
+    pub truncated: bool,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct SetAclRequest {
     pub path: String,

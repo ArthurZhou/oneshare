@@ -215,6 +215,15 @@ pub struct ServerConfig {
     /// startup and then hourly. `0` keeps entries forever. Default 365.
     #[serde(default = "default_audit_retention_days")]
     pub audit_retention_days: u32,
+    /// Username of the instance administrator. When set, this user — matched
+    /// against the OIDC `name`/`preferred_username` claim (the display name
+    /// shown in the UI) or the OIDC `sub` — is the admin. Admin status is
+    /// derived from the config on every request and is NOT stored in the
+    /// database, so granting or revoking admin is a config edit (takes effect
+    /// on the user's next request, no re-login needed). Leave unset to keep
+    /// the legacy "first user to log in becomes admin" behavior.
+    #[serde(default)]
+    pub admin_user: Option<String>,
 }
 
 fn default_audit_retention_days() -> u32 {

@@ -7,9 +7,10 @@ use crate::models::*;
 use crate::AppState;
 use libfw_core::pathmap::PathCodec;
 use axum::{
+    body::Body,
     extract::{Json, Query, State},
     http::StatusCode,
-    response::IntoResponse,
+    response::{IntoResponse, Response},
 };
 use axum_extra::extract::cookie::CookieJar;
 use std::collections::HashMap;
@@ -620,6 +621,252 @@ pub async fn mkdir(
     audit::record(&state.db, &ru.user, actions::MKDIR, &display_new, "");
 
     Ok(StatusCode::CREATED)
+}
+
+// ── Inline preview & online text editing ──
+//
+// Three endpoints power the file detail view:
+// - `GET /api/files/content` — metadata + (for small text files) the full
+//   text content, for the text preview/editor.
+// - `PUT /api/files/content` — save edited text back (write permission).
+// - `GET /api/files/raw` — inline binary preview (images, video, audio) with
+//   session-cookie auth, so `<img src>` just works.
+//
+// All of them resolve the display path through the same ACL layer as every
+// other file operation and never expose real filesystem paths.
+
+/// Maximum size (bytes) of a text file served to / accepted from the editor.
+const MAX_TEXT_SIZE: u64 = 1024 * 1024;
+/// Maximum size (bytes) served by the inline `/api/files/raw` preview.
+const MAX_RAW_PREVIEW: u64 = 64 * 1024 * 1024;
+
+/// Leaf name of a real (sanitized) relative path.
+fn leaf_name(real: &str) -> &str {
+    real.rsplit('/').next().unwrap_or(real)
+}
+
+/// Whether a MIME type denotes a plain-text family we preview/edit inline.
+/// Extension-less text (Makefile, Dockerfile, …) is still caught by the
+/// UTF-8/no-NUL sniff in `get_content`.
+fn is_text_mime(mime: &str) -> bool {
+    mime.starts_with("text/")
+        || matches!(
+            mime,
+            "application/json"
+                | "application/xml"
+                | "application/xhtml+xml"
+                | "application/javascript"
+                | "application/x-javascript"
+                | "application/yaml"
+                | "application/x-yaml"
+                | "application/toml"
+                | "application/x-sh"
+                | "application/sql"
+                | "application/x-httpd-php"
+                | "application/x-perl"
+                | "application/x-python"
+                | "image/svg+xml"
+        )
+}
+
+/// Whether `/api/files/raw` may serve the file inline. Deliberately limited
+/// to browser-safe media: images (never SVG — it can carry scripts, which
+/// would be a stored-XSS hole when served same-origin), video and audio.
+/// HTML/PDF/etc. are download-only.
+fn is_safe_inline_mime(mime: &str) -> bool {
+    let mime = mime.split(';').next().unwrap_or(mime).trim();
+    (mime.starts_with("image/") && mime != "image/svg+xml")
+        || mime.starts_with("video/")
+        || mime.starts_with("audio/")
+}
+
+/// Fetch a file's metadata + text content for the detail view / editor.
+pub async fn get_content(
+    State(state): State<Arc<AppState>>,
+    jar: CookieJar,
+    Query(query): Query<crate::models::ContentQuery>,
+) -> Result<Json<crate::models::FileContentResponse>, StatusCode> {
+    let ru = get_request_user(&jar, &state.db).await?;
+    let real =
+        resolve_checked(&state, &ru.user, &ru.groups, &query.path, Permission::Read).await?;
+    let root = state.config.root_dir().clone();
+    ensure_no_symlink(&root, &real)?;
+    let full = root.join(&real);
+
+    let meta = std::fs::metadata(&full).map_err(|_| StatusCode::NOT_FOUND)?;
+    if meta.is_dir() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    let name = leaf_name(&real).to_string();
+    let mime = mime_guess::from_path(&name)
+        .first_or_octet_stream()
+        .to_string();
+
+    let acl_entries = state
+        .db
+        .list_acl_entries()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let writable =
+        acl::can_access(&ru.user, &ru.groups, &acl_entries, &real, &Permission::Write);
+
+    // Text handling: within the size limit we read the bytes once and decide
+    // by content — declared text MIME types are served as text, and so is any
+    // file that is valid UTF-8 without NUL bytes (catches extension-less
+    // scripts/configs). Anything else is binary. Text larger than the limit
+    // is reported as `truncated` so the UI can offer download instead.
+    let mut is_text = is_text_mime(&mime);
+    let mut content = None;
+    let mut truncated = false;
+
+    if meta.len() <= MAX_TEXT_SIZE {
+        match std::fs::read(&full) {
+            Ok(bytes) => {
+                let looks_text = !bytes.contains(&0u8);
+                match String::from_utf8(bytes) {
+                    Ok(text) if is_text || looks_text => {
+                        is_text = true;
+                        content = Some(text);
+                    }
+                    _ => is_text = false,
+                }
+            }
+            Err(e) => {
+                tracing::error!("Failed to read '{}' for preview: {}", full.display(), e);
+                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            }
+        }
+    } else if is_text {
+        truncated = true;
+    } else {
+        is_text = false;
+    }
+
+    Ok(Json(crate::models::FileContentResponse {
+        name,
+        path: query.path,
+        size: meta.len(),
+        modified: meta
+            .modified()
+            .ok()
+            .and_then(|t| {
+                chrono::DateTime::from_timestamp(
+                    t.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs() as i64,
+                    0,
+                )
+            })
+            .map(|d| d.format("%Y-%m-%d %H:%M").to_string())
+            .unwrap_or_default(),
+        mime_type: mime,
+        is_text,
+        writable,
+        content,
+        truncated,
+    }))
+}
+
+/// Save edited text content back to a file (requires write permission).
+///
+/// Refuses to write into a directory, over the size limit, or over a file
+/// that is not text (NUL byte / invalid UTF-8), so the editor can never
+/// silently corrupt a binary file.
+pub async fn put_content(
+    State(state): State<Arc<AppState>>,
+    jar: CookieJar,
+    Json(body): Json<crate::models::SaveContentRequest>,
+) -> Result<StatusCode, StatusCode> {
+    let ru = get_request_user(&jar, &state.db).await?;
+
+    if body.content.len() as u64 > MAX_TEXT_SIZE {
+        return Err(StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    let real =
+        resolve_checked(&state, &ru.user, &ru.groups, &body.path, Permission::Write).await?;
+    let root = state.config.root_dir().clone();
+    ensure_no_symlink(&root, &real)?;
+    let full = root.join(&real);
+
+    let meta = std::fs::metadata(&full).map_err(|_| StatusCode::NOT_FOUND)?;
+    if meta.is_dir() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    // Only ever (over)write files we know are text: a NUL byte or invalid
+    // UTF-8 in the existing content means the editor is pointed at a binary
+    // file, and saving would destroy it.
+    match std::fs::read(&full) {
+        Ok(existing) => {
+            if existing.contains(&0u8) || String::from_utf8(existing).is_err() {
+                return Err(StatusCode::UNSUPPORTED_MEDIA_TYPE);
+            }
+        }
+        Err(e) => {
+            tracing::error!("Failed to read '{}' before save: {}", full.display(), e);
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+    }
+
+    std::fs::write(&full, body.content.as_bytes()).map_err(|e| {
+        tracing::error!("Failed to write '{}': {}", full.display(), e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    audit::record(
+        &state.db,
+        &ru.user,
+        actions::FILE_SAVE,
+        &body.path,
+        &format!("saved {} bytes", body.content.len()),
+    );
+
+    Ok(StatusCode::OK)
+}
+
+/// Serve a file's raw bytes for inline preview (`<img>`/`<video>`/`<audio>`).
+///
+/// Authenticated by session cookie like every other `/api/files` endpoint,
+/// so plain element sources work without bearer-token plumbing. Restricted
+/// to browser-safe media types (see [`is_safe_inline_mime`]).
+pub async fn raw(
+    State(state): State<Arc<AppState>>,
+    jar: CookieJar,
+    Query(query): Query<crate::models::ContentQuery>,
+) -> Result<Response, StatusCode> {
+    let ru = get_request_user(&jar, &state.db).await?;
+    let real = resolve_checked(&state, &ru.user, &ru.groups, &query.path, Permission::Read).await?;
+    let root = state.config.root_dir().clone();
+    ensure_no_symlink(&root, &real)?;
+    let full = root.join(&real);
+
+    let meta = std::fs::metadata(&full).map_err(|_| StatusCode::NOT_FOUND)?;
+    if meta.is_dir() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    if meta.len() > MAX_RAW_PREVIEW {
+        return Err(StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    let mime = mime_guess::from_path(leaf_name(&real))
+        .first_or_octet_stream()
+        .to_string();
+    if !is_safe_inline_mime(&mime) {
+        return Err(StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    }
+
+    let bytes = std::fs::read(&full).map_err(|e| {
+        tracing::error!("Failed to read '{}' for preview: {}", full.display(), e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    Response::builder()
+        .header("content-type", mime)
+        .header("content-length", bytes.len())
+        .header("content-disposition", "inline")
+        // Never let the browser sniff around our declared (safe) type.
+        .header("x-content-type-options", "nosniff")
+        .body(Body::from(bytes))
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
 /// Resolve a frontend-supplied path to a real path and check `required`

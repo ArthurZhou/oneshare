@@ -474,6 +474,20 @@ a:hover {
   padding: 4px 0;
   min-width: 180px;
   z-index: 200;
+  box-shadow: 0 10px 30px var(--shadow);
+  transform-origin: top left;
+  animation: oneshare-menu-in 0.12s ease both;
+}
+
+@keyframes oneshare-menu-in {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }
 
 .ctx-item {
@@ -504,12 +518,15 @@ a:hover {
 .modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.5);
+  background: rgba(0, 0, 0, 0.55);
+  -webkit-backdrop-filter: blur(4px);
+  backdrop-filter: blur(4px);
   display: flex;
   align-items: center;
   justify-content: center;
   z-index: 300;
   padding: 20px;
+  animation: oneshare-fade-in 0.18s ease both;
 }
 
 .modal {
@@ -517,6 +534,29 @@ a:hover {
   width: 100%;
   max-width: 460px;
   border: 1px solid var(--line);
+  box-shadow: 0 18px 50px var(--shadow);
+  animation: oneshare-pop-in 0.22s cubic-bezier(0.2, 0.9, 0.3, 1.15) both;
+}
+
+/* Large dialogs (file detail / preview / editor). */
+.modal.wide {
+  max-width: min(880px, 94vw);
+}
+
+@keyframes oneshare-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes oneshare-pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }
 
 /* 标题栏沿用 sample 的“反色色块”, 去掉底部横线 */
@@ -589,6 +629,126 @@ a:hover {
   padding: 14px 20px;
 }
 
+/* ── File detail / inline preview / online editor ── */
+.file-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.file-detail-meta {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px 24px;
+  font-size: 12px;
+}
+
+.meta-row {
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+}
+
+.meta-label {
+  color: var(--muted);
+  text-transform: uppercase;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.meta-row span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-detail-preview {
+  border: 1px solid var(--line);
+  background: var(--secondary-bg);
+  min-height: 140px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: auto;
+}
+
+.media-preview {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 10px;
+}
+
+.media-preview img {
+  max-width: 100%;
+  max-height: 55vh;
+  object-fit: contain;
+  display: block;
+}
+
+.media-preview video {
+  max-width: 100%;
+  max-height: 55vh;
+}
+
+.text-preview {
+  align-self: stretch;
+  width: 100%;
+  max-height: 55vh;
+  overflow: auto;
+  margin: 0;
+  padding: 12px 14px;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+  text-align: left;
+}
+
+.text-editor {
+  width: 100%;
+  min-height: 44vh;
+  resize: vertical;
+  border: none;
+  outline: none;
+  background: var(--bg);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.55;
+  padding: 12px 14px;
+}
+
+.editor-actions {
+  width: 100%;
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 10px;
+  border-top: 1px solid var(--line);
+}
+
+.file-detail-empty {
+  width: 100%;
+  padding: 34px 20px;
+  color: var(--muted);
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.file-detail-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
 /* ── Upload progress ── */
 .upload-progress {
   position: fixed;
@@ -654,6 +814,29 @@ a:hover {
   overflow: hidden;
   display: flex;
   flex-direction: column;
+  box-shadow: 0 18px 50px var(--shadow);
+  animation: oneshare-panel-in 0.2s ease both;
+}
+
+@keyframes oneshare-panel-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.99);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Respect users who opt out of motion: dialogs appear instantly. */
+@media (prefers-reduced-motion: reduce) {
+  .modal-overlay,
+  .modal,
+  .ctx-menu,
+  .admin-panel {
+    animation: none;
+  }
 }
 
 /* 反色色块标题栏, 去横线 */

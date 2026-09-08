@@ -156,6 +156,12 @@ function renderFiles(data) {
     row.addEventListener('click', () => navigate(row.dataset.path));
   });
 
+  // Clicking a file opens its detail view (inline preview for images /
+  // media / text, online editing for writable text files).
+  el.querySelectorAll('.file-row:not(.dir):not(.header)').forEach(row => {
+    row.addEventListener('click', () => openFileDetail({ path: row.dataset.path, name: row.dataset.name }));
+  });
+
   // Wire up download buttons (files download directly, folders download as a tree/ZIP)
   el.querySelectorAll('[data-action="download"]').forEach(btn => {
     btn.addEventListener('click', (e) => {
@@ -399,6 +405,9 @@ function addTransfer(transfer) {
 function updateTransfer(id, patch) {
   const t = transfers.find(x => x.id === id);
   if (!t) return;
+  // A user-cancelled row is final: late engine events (e.g. a progress tail
+  // or an error after the force-cancel failsafe fired) must not resurrect it.
+  if (t.status === 'cancelled' && patch.status && patch.status !== 'cancelled') return;
   Object.assign(t, patch);
   renderTransfers();
 }
@@ -415,6 +424,8 @@ function transferStatusLabel(t) {
   if (t.finalizing) return `${iconSvg('refresh-cw', 'spin')} finalizing`;
   switch (t.status) {
     case 'active': return '...';
+    // User pressed cancel; the engine hasn't confirmed the abort yet.
+    case 'cancelling': return `${iconSvg('refresh-cw', 'spin')} 取消中`;
     case 'done': return `${iconSvg('check')} done`;
     case 'error': return `${iconSvg('alert-circle')} 失败`;
     case 'cancelled': return `${iconSvg('x')} 已取消`;
@@ -429,7 +440,7 @@ function transferPct(t) {
     // `done` only reaches 100% when the transfer is actually complete. Keep
     // a 99 cap while active purely so we never show 100% before the
     // post-completion 'done' state.
-    return t.status === 'active' ? Math.min(99, pct) : pct;
+    return t.status === 'active' || t.status === 'cancelling' ? Math.min(99, pct) : pct;
   }
   return 0;
 }
@@ -500,6 +511,56 @@ function renderTuningBar() {
 // Subscribe once on boot: every tuning event refreshes the bar live.
 Libfw.onTuningChange = renderTuningBar;
 
+// HTML of one transfer row. `data-sig` carries a signature of the parts that
+// require a DOM rebuild when they change (status/error/finalizing); pure
+// progress updates only patch numbers in place (see renderTransfers).
+function transferRowHtml(t) {
+  const done = t.status === 'done';
+  // "finalizing": all bytes flushed to the server but COMPLETE not yet
+  // confirmed — the row keeps an animated bar instead of freezing at 99%.
+  const finalizing = t.status === 'active' && !!t.finalizing;
+  const finished = done || t.status === 'error' || t.status === 'cancelled';
+  const cancelling = t.status === 'cancelling';
+  const action = finished
+    ? `<button class="btn btn-sm" data-xfer-remove="${t.id}" title="移除">${iconSvg('x')}</button>`
+    : `<button class="btn btn-sm" data-xfer-cancel="${t.id}" title="取消"${cancelling ? ' disabled' : ''}>${iconSvg('x')}</button>`;
+  const arrow = iconSvg(t.kind === 'upload' ? 'upload' : 'download');
+  const sub = t.kind === 'upload'
+    ? `上传 · ${formatSize(t.total)}`
+    : '下载';
+  const pctVal = done ? 100 : (finalizing ? finalizingPct(t) : transferPct(t));
+  return `
+    <div class="transfer-row" data-xfer-id="${t.id}" data-sig="${transferRowSig(t)}">
+      <div class="transfer-top">
+        <span class="transfer-name" title="${escapeHtml(t.name)}">${arrow} ${escapeHtml(t.name)}</span>
+        <span class="transfer-right">
+          <span class="transfer-pct">${done ? '100%' : pctVal + '%'} ${transferStatusLabel(t)}</span>
+          ${action}
+        </span>
+      </div>
+      <div class="progress-bar"><div class="progress-fill${finalizing ? ' finalizing' : ''}" style="width:${pctVal}%"></div></div>
+      <div class="transfer-sub">${sub}${t.error ? ` · <span class="err">${escapeHtml(t.error)}</span>` : ''}</div>
+    </div>`;
+}
+
+// Row signature: when it changes the row HTML must be rebuilt (button kind,
+// status label, error text); otherwise the row is patched in place.
+function transferRowSig(t) {
+  return `${t.status}|${!!t.finalizing}|${t.error || ''}`;
+}
+
+function wireTransferActions() {
+  document.querySelectorAll('#transfers-list [data-xfer-remove]').forEach(btn => {
+    btn.onclick = () => removeTransfer(parseInt(btn.dataset.xferRemove));
+  });
+  document.querySelectorAll('#transfers-list [data-xfer-cancel]').forEach(btn => {
+    btn.onclick = () => {
+      const t = transfers.find(x => x.id === parseInt(btn.dataset.xferCancel));
+      if (t) requestCancel(t);
+    };
+  });
+}
+
 function renderTransfers() {
   const panel = document.getElementById('transfers-panel');
   const list = document.getElementById('transfers-list');
@@ -511,43 +572,67 @@ function renderTransfers() {
   panel.style.display = 'block';
   renderTuningBar();
 
-  list.innerHTML = transfers.map(t => {
-    const done = t.status === 'done';
-    // "finalizing": all bytes flushed to the server but COMPLETE not yet
-    // confirmed — the row keeps an animated bar instead of freezing at 99%.
-    const finalizing = t.status === 'active' && !!t.finalizing;
-    const finished = done || t.status === 'error' || t.status === 'cancelled';
-    const action = finished
-      ? `<button class="btn btn-sm" data-xfer-remove="${t.id}" title="移除">${iconSvg('x')}</button>`
-      : `<button class="btn btn-sm" data-xfer-cancel="${t.id}" title="取消">${iconSvg('x')}</button>`;
-    const arrow = iconSvg(t.kind === 'upload' ? 'upload' : 'download');
-    const sub = t.kind === 'upload'
-      ? `上传 · ${formatSize(t.total)}`
-      : '下载';
-    const pctVal = done ? 100 : (finalizing ? finalizingPct(t) : transferPct(t));
-    return `
-      <div class="transfer-row">
-        <div class="transfer-top">
-          <span class="transfer-name" title="${escapeHtml(t.name)}">${arrow} ${escapeHtml(t.name)}</span>
-          <span class="transfer-right">
-            <span class="transfer-pct">${done ? '100%' : pctVal + '%'} ${transferStatusLabel(t)}</span>
-            ${action}
-          </span>
-        </div>
-        <div class="progress-bar"><div class="progress-fill${finalizing ? ' finalizing' : ''}" style="width:${pctVal}%"></div></div>
-        <div class="transfer-sub">${sub}${t.error ? ` · <span class="err">${escapeHtml(t.error)}</span>` : ''}</div>
-      </div>`;
-  }).join('');
+  // Rebuild the DOM only when the row SET changes (a transfer added or
+  // removed). Progress updates then patch each row's numbers in place —
+  // a full innerHTML rebuild on every progress tick used to destroy the
+  // hovered X button and re-create it, which read as constant flickering.
+  const ids = transfers.map(t => t.id).join(',');
+  if (ids !== renderTransfers._rowIds) {
+    renderTransfers._rowIds = ids;
+    list.innerHTML = transfers.map(transferRowHtml).join('');
+    wireTransferActions();
+  }
 
-  list.querySelectorAll('[data-xfer-remove]').forEach(btn => {
-    btn.addEventListener('click', () => removeTransfer(parseInt(btn.dataset.xferRemove)));
+  transfers.forEach(t => {
+    const row = list.querySelector(`[data-xfer-id="${t.id}"]`);
+    if (!row) return;
+    if (row.dataset.sig !== transferRowSig(t)) {
+      // Status/error changed → replace just this row (rare, so the momentary
+      // hover reset is imperceptible).
+      row.outerHTML = transferRowHtml(t);
+      wireTransferActions();
+      return;
+    }
+    // Same state: patch the moving numbers only.
+    const done = t.status === 'done';
+    const finalizing = t.status === 'active' && !!t.finalizing;
+    const pctVal = done ? 100 : (finalizing ? finalizingPct(t) : transferPct(t));
+    const pctEl = row.querySelector('.transfer-pct');
+    if (pctEl) pctEl.innerHTML = `${done ? '100%' : pctVal + '%'} ${transferStatusLabel(t)}`;
+    const fillEl = row.querySelector('.progress-fill');
+    if (fillEl) fillEl.style.width = pctVal + '%';
   });
-  list.querySelectorAll('[data-xfer-cancel]').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const t = transfers.find(x => x.id === parseInt(btn.dataset.xferCancel));
-      if (t && typeof t.cancel === 'function') t.cancel();
-    });
-  });
+}
+
+// User pressed the X on an active transfer.
+//
+// Feedback is immediate ('cancelling' state) and the abort is targeted at
+// the transfer's ENGINE id (learned via the facade's onId callback) — using
+// the UI's list id used to hit whatever transfer happened to share that
+// number, which is why cancel sometimes did nothing.
+//
+// Failsafe: the engine only notices the abort at chunk boundaries (large
+// chunks on a slow link can delay that a long while). If it hasn't settled
+// after a grace period, the row is marked cancelled anyway — the engine's
+// eventual rejection then lands on an already-cancelled row (ignored).
+const CANCEL_GRACE_MS = 4000;
+
+function requestCancel(t) {
+  if (t.status !== 'active' && t.status !== 'cancelling') return;
+  const firstClick = t.status === 'active';
+  updateTransfer(t.id, { status: 'cancelling' });
+  if (firstClick) {
+    if (t.engineId != null) {
+      Libfw.cancel(t.engineId);
+    }
+    clearTimeout(t._cancelTimer);
+    t._cancelTimer = setTimeout(() => {
+      const cur = transfers.find(x => x.id === t.id);
+      if (cur && (cur.status === 'active' || cur.status === 'cancelling')) {
+        updateTransfer(t.id, { status: 'cancelled', finalizing: false });
+      }
+    }, CANCEL_GRACE_MS);
+  }
 }
 
 // ── Upload (via libfw SDK) ──
@@ -607,7 +692,6 @@ async function handleUpload(input) {
     error: null,
   };
   addTransfer(t);
-  t.cancel = () => Libfw.cancel(t.id);
   t.run = () => runUploadTask(t, destPath, tokenResp.token, tokenResp.path, items);
   t.run();
 }
@@ -627,7 +711,7 @@ async function runUploadTask(t, destPath, token, dirShadow, items) {
         // it reads as finishing rather than a frozen 99%.
         finalizing: !!(ev.total > 0 && ev.done / ev.total >= 0.98),
       });
-    });
+    }, (id) => { t.engineId = id; });
     updateTransfer(t.id, { status: 'done', done: t.total, finalizing: false });
     scheduleUploadRefresh();
   } catch (e) {
@@ -653,7 +737,6 @@ function downloadFile(path, name) {
     const tokenResp = await API.getToken(path, 'read');
     const t = { kind: 'download', name, total: 0, done: 0, status: 'active', error: null };
     addTransfer(t);
-    t.cancel = () => Libfw.cancel(t.id);
     // The SDK builds `/file/{path}` from the path we give it, which must be
     // the opaque shadow bound to the token (`tokenResp.path`) — the display
     // path we sent would fail the server's codec decode.
@@ -680,7 +763,7 @@ async function runFileDownloadTask(t, path, name, token) {
     // sends the opaque shadow path over HTTP; the embedded server decodes it
     // to the real path the token is bound to. `name` is the display leaf
     // name the file is saved under — the shadow would be a useless filename.
-    const done = await Libfw.downloadFile(token, path, name, progress);
+    const done = await Libfw.downloadFile(token, path, name, progress, (id) => { t.engineId = id; });
     updateTransfer(t.id, { status: 'done', done, finalizing: false });
     setTimeout(() => removeTransfer(t.id), 3000);
   } catch (e) {
@@ -697,7 +780,6 @@ function downloadFolder(path, name) {
     const tokenResp = await API.getToken(path, 'read');
     const t = { kind: 'download', name, total: 0, done: 0, status: 'active', error: null };
     addTransfer(t);
-    t.cancel = () => Libfw.cancel(t.id);
     // Same as single files: the SDK walks `/dir/{path}` from this path, so
     // it must be the opaque shadow, not the display path we sent.
     t.run = () => runFolderDownloadTask(t, tokenResp.path, name, tokenResp.token);
@@ -722,7 +804,7 @@ async function runFolderDownloadTask(t, path, name, token) {
         total: ev.total,
         finalizing: !!(ev.total > 0 && ev.done / ev.total >= 0.98),
       });
-    });
+    }, (id) => { t.engineId = id; });
     updateTransfer(t.id, { status: 'done', done: bytes, finalizing: false });
     setTimeout(() => removeTransfer(t.id), 3000);
   } catch (e) {
@@ -1155,16 +1237,149 @@ async function performMove(destDir) {
   }
 }
 
-// ── Modal helpers ──
+// ── File detail view (click a file row) ──
+//
+// A wide modal showing metadata plus an inline preview: images/video/audio
+// stream from `/api/files/raw` (session-cookie auth); small text files load
+// their content from `/api/files/content` and can be edited online when the
+// user holds write permission. Real paths never appear here — the display
+// path is resolved server-side, exactly like every other file operation.
 
-function showModal(title, bodyHtml, onOk) {
+async function openFileDetail(file) {
+  showModal(file.name, '<div class="file-detail-empty">加载中...</div>', null, {
+    wide: true,
+    hideFooter: true,
+  });
+  let detail;
+  try {
+    detail = await API.getFileDetail(file.path);
+  } catch (e) {
+    document.getElementById('modal-body').innerHTML =
+      `<div class="file-detail-empty">${iconSvg('alert-circle')} 加载失败: ${escapeHtml(e.message)}</div>`;
+    return;
+  }
+  renderFileDetail(detail);
+}
+
+function previewHtmlFor(detail) {
+  const mime = detail.mime_type || '';
+  const isImage = mime.startsWith('image/') && mime !== 'image/svg+xml';
+  const isVideo = mime.startsWith('video/');
+  const isAudio = mime.startsWith('audio/');
+  const src = API.rawUrl(detail.path);
+
+  if (detail.is_text && detail.content != null) {
+    return `<pre class="text-preview">${escapeHtml(detail.content)}</pre>`;
+  }
+  if (detail.is_text && detail.truncated) {
+    return `<div class="file-detail-empty">${iconSvg('file-text')} 文本文件过大 — 请下载后查看</div>`;
+  }
+  if (isImage) {
+    return `<div class="media-preview"><img src="${src}" alt="${escapeHtml(detail.name)}" loading="lazy"></div>`;
+  }
+  if (isVideo) {
+    return `<div class="media-preview"><video controls preload="metadata" src="${src}"></video></div>`;
+  }
+  if (isAudio) {
+    return `<div class="media-preview"><audio controls src="${src}"></audio></div>`;
+  }
+  return `<div class="file-detail-empty">${fileIcon(detail.name)} 此文件类型暂不支持在线预览</div>`;
+}
+
+function renderFileDetail(detail) {
+  const meta = `
+    <div class="file-detail-meta">
+      <div class="meta-row"><span class="meta-label">大小</span><span>${formatSize(detail.size)}</span></div>
+      <div class="meta-row"><span class="meta-label">修改时间</span><span>${escapeHtml(detail.modified) || '—'}</span></div>
+      <div class="meta-row"><span class="meta-label">类型</span><span title="${escapeHtml(detail.mime_type)}">${escapeHtml(detail.mime_type)}</span></div>
+      <div class="meta-row"><span class="meta-label">路径</span><span class="meta-path" title="${escapeHtml(detail.path)}">${escapeHtml(detail.path)}</span></div>
+    </div>`;
+
+  const editable = detail.is_text && detail.content != null && detail.writable;
+  const actions = `
+    <div class="file-detail-actions">
+      <button class="btn" id="detail-download">${iconSvg('download')} 下载</button>
+      ${editable ? `<button class="btn btn-primary" id="detail-edit">${iconSvg('pen-tool')} 在线编辑</button>` : ''}
+    </div>`;
+
+  document.getElementById('modal-body').innerHTML =
+    `<div class="file-detail">${meta}<div class="file-detail-preview">${previewHtmlFor(detail)}</div>${actions}</div>`;
+
+  document.getElementById('detail-download').onclick = () => downloadFile(detail.path, detail.name);
+  const editBtn = document.getElementById('detail-edit');
+  if (editBtn) editBtn.onclick = () => enterTextEditMode(detail);
+}
+
+// Swap the preview for a textarea. `detail.content` is kept in sync so
+// Cancel simply re-renders the (unmodified) preview, and Ctrl+S saves.
+function enterTextEditMode(detail) {
+  const container = document.querySelector('#modal-body .file-detail-preview');
+  if (!container) return;
+  container.innerHTML = `
+    <textarea id="text-editor" class="text-editor" spellcheck="false" wrap="off"></textarea>
+    <div class="editor-actions">
+      <button class="btn" id="edit-cancel">取消</button>
+      <button class="btn btn-primary" id="edit-save">${iconSvg('check')} 保存</button>
+    </div>`;
+
+  const ta = document.getElementById('text-editor');
+  ta.value = detail.content;
+  ta.addEventListener('keydown', (e) => {
+    // Ctrl/Cmd+S saves without leaving the editor.
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+      e.preventDefault();
+      save();
+      return;
+    }
+    // Tab inserts spaces instead of moving focus.
+    if (e.key === 'Tab') {
+      e.preventDefault();
+      const s = ta.selectionStart, t = ta.selectionEnd;
+      ta.value = ta.value.slice(0, s) + '  ' + ta.value.slice(t);
+      ta.selectionStart = ta.selectionEnd = s + 2;
+    }
+  });
+  ta.focus();
+
+  document.getElementById('edit-cancel').onclick = () => renderFileDetail(detail);
+  document.getElementById('edit-save').onclick = save;
+
+  async function save() {
+    const btn = document.getElementById('edit-save');
+    btn.disabled = true;
+    btn.textContent = '保存中...';
+    try {
+      await API.saveFileContent(detail.path, ta.value);
+      detail.content = ta.value;
+      // Size/mtime may have changed — refresh the listing in the background.
+      loadFiles(currentPath);
+      renderFileDetail(detail);
+    } catch (e) {
+      btn.disabled = false;
+      btn.textContent = '保存';
+      alert('保存失败: ' + e.message);
+    }
+  }
+}
+
+// ── Modal helpers ──
+//
+// `opts`:
+//   wide       → add the `wide` class (large dialogs, e.g. file preview)
+//   hideFooter → hide the OK/Cancel footer (dialogs with their own actions)
+//   okText     → custom OK label
+function showModal(title, bodyHtml, onOk, opts = {}) {
+  const modal = document.getElementById('modal');
   document.getElementById('modal-title').textContent = title;
   document.getElementById('modal-body').innerHTML = bodyHtml;
+  modal.classList.toggle('wide', !!opts.wide);
+  document.querySelector('#modal .modal-footer').style.display = opts.hideFooter ? 'none' : 'flex';
   document.getElementById('modal-overlay').style.display = 'flex';
 
   const okBtn = document.getElementById('modal-ok');
   const cancelBtn = document.getElementById('modal-cancel');
   const closeBtn = document.getElementById('modal-close');
+  if (opts.okText) okBtn.textContent = opts.okText;
 
   const cleanup = () => {
     okBtn.onclick = null;
@@ -1201,6 +1416,11 @@ function hideModal() {
     okBtn.textContent = '确定';
     okBtn.classList.remove('btn-danger');
   }
+  // Reset wide/footer overrides from the previous dialog.
+  const modal = document.getElementById('modal');
+  if (modal) modal.classList.remove('wide');
+  const footer = document.querySelector('#modal .modal-footer');
+  if (footer) footer.style.display = 'flex';
 }
 
 // ── Utilities ──

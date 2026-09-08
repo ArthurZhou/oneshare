@@ -512,7 +512,10 @@ async fn main() {
 
     std::fs::create_dir_all(config.root_dir()).expect("Failed to create root dir");
 
-    let db = Arc::new(Database::new(config.database_url()).expect("Failed to initialize database"));
+    let db = Arc::new(Database::new(
+        config.database_url(),
+        config.server.admin_user.clone(),
+    ).expect("Failed to initialize database"));
 
     // Audit-log retention: prune old entries right away so a fresh start
     // enforces the configured window even if the server was down for a while
@@ -651,6 +654,17 @@ async fn main() {
         .route("/api/files/mkdir", post(api::files::mkdir))
         .route("/api/files/token", get(api::files::get_token))
         .route("/api/files/names", get(api::files::get_names))
+        // Inline preview / online text editing. The PUT body is JSON-wrapped
+        // text, so raise axum's 2 MiB default body limit on this route to
+        // cover the 1 MiB text limit with worst-case JSON escaping.
+        .route(
+            "/api/files/content",
+            get(api::files::get_content)
+                .put(api::files::put_content)
+                .layer(axum::extract::DefaultBodyLimit::max(8 * 1024 * 1024)),
+        )
+        // Inline binary preview (images/video/audio) for the file detail view.
+        .route("/api/files/raw", get(api::files::raw))
         .route("/api/admin/users", get(api::admin::list_users))
         .route("/api/admin/groups", get(api::admin::list_groups))
         .route("/api/admin/groups", post(api::admin::create_group))

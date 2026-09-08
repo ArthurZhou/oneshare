@@ -1,10 +1,12 @@
 use crate::db::{AclEntryRow, UserRow};
 
+// NOTE: there is deliberately no ACL-level `admin` permission. Full control
+// is the `is_admin` user flag (see `can_access`), which bypasses ACLs
+// entirely; ACL rules only ever grant `read` or `write`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Permission {
     Read,
     Write,
-    Admin,
 }
 
 impl Permission {
@@ -12,15 +14,13 @@ impl Permission {
         match s {
             "read" => Some(Permission::Read),
             "write" => Some(Permission::Write),
-            "admin" => Some(Permission::Admin),
             _ => None,
         }
     }
 
     pub fn covers(&self, required: &Permission) -> bool {
         match self {
-            Permission::Admin => true,
-            Permission::Write => matches!(required, Permission::Read | Permission::Write),
+            Permission::Write => true,
             Permission::Read => matches!(required, Permission::Read),
         }
     }
@@ -474,8 +474,9 @@ mod tests {
         assert!(!Permission::Read.covers(&Permission::Write));
         assert!(Permission::Write.covers(&Permission::Read));
         assert!(Permission::Write.covers(&Permission::Write));
-        assert!(Permission::Admin.covers(&Permission::Read));
-        assert!(Permission::Admin.covers(&Permission::Write));
+        // There is no ACL-level `admin` permission: full control is the
+        // `is_admin` user flag, not an ACL rule.
+        assert_eq!(Permission::from_str("admin"), None);
     }
 
     #[test]

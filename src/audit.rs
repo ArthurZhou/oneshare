@@ -48,6 +48,8 @@ pub mod actions {
     pub const RENAME: &str = "rename";
     pub const MOVE: &str = "move";
     pub const DELETE: &str = "delete";
+    /// A text file's content was saved through the online editor.
+    pub const FILE_SAVE: &str = "file.save";
     /// A read (download) transfer token was issued.
     pub const TOKEN_READ: &str = "token.read";
     /// A write (upload) transfer token was issued.
