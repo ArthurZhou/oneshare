@@ -1,106 +1,79 @@
 # OneShare Configuration Example
-# Copy this file to config.toml and fill in your values.
+# Copy this file to config.toml and replace the placeholder values.
+# This file is the canonical reference for the runtime settings used by OneShare.
 
 [server]
+# Public bind address for the HTTP server.
 listen_addr = "0.0.0.0"
+# Listening port.
 listen_port = 3456
+# Root directory used for file storage and uploaded content.
 root_dir = "./data"
+# SQLite database path.
 database_url = "oneshare.db"
 # IMPORTANT: set a strong random value (>= 16 bytes). The server refuses to
-# start with the default/empty secret.
+# start with an empty or weak secret.
 hmac_secret = "REPLACE_WITH_A_STRONG_RANDOM_SECRET_AT_LEAST_16_BYTES"
-# Username of the instance administrator. When set, this user — matched
-# against the OIDC name/preferred_username claim (the display name shown in
-# the UI) or the OIDC `sub` — is the admin. Admin status is derived from the
-# config on every request and is NOT stored in the database, so granting or
-# revoking admin is a config edit (effective on the user's next request, no
-# re-login needed). Leave unset to keep the legacy "first user to log in
-# becomes admin" behavior.
-# admin_user = "your-username"
-# URL prefix (base path) when running behind a reverse proxy on a shared
-# domain, e.g. "/oneshare". Leave empty to serve at the domain root.
+# Optional URL prefix when OneShare is served behind a reverse proxy under a
+# subpath, e.g. "/oneshare". Leave empty to serve at the domain root.
 base_url = ""
-# Mark the session cookie Secure (HTTPS-only). Enable when serving over TLS.
+# Mark the session cookie Secure (HTTPS-only). Enable only when serving over TLS.
 session_cookie_secure = false
-# Optional CORS allowlist of origins (empty = same-origin only).
+# Optional CORS allowlist. Empty means same-origin only.
 allowed_origins = []
-# Trash directory for deletions. When set, deleted files/folders are MOVED
-# here (preserving their relative path) instead of being deleted permanently,
-# so they can be recovered. Relative paths resolve against root_dir (".trash"
-# is a good choice — dot-prefixed entries are hidden from listings). Empty
-# (default) = delete permanently.
+# When set, deleted files/folders are moved here instead of being permanently
+# removed. Relative paths resolve against root_dir.
 trash_dir = ".trash"
+# Audit log retention in days. 0 keeps entries forever.
+audit_retention_days = 365
+# Optional admin username. When set, this user is treated as admin based on
+# the config on every request. Leave unset to keep the legacy first-login-admin
+# behavior.
+# admin_user = "your-username"
 
 [oidc]
 issuer_url = "https://login.example.com"
 client_id = "your-client-id"
 client_secret = "your-client-secret"
-# NOTE: there is no redirect_uri setting. The OIDC callback URL is derived
-# automatically from each login request's scheme + Host header + base_url
-# (i.e. {scheme}://{host}{base_url}/auth/callback), so it always matches the
-# origin the user actually used — register that exact URL in your provider.
-# Optional overrides for any of the OIDC endpoints (authorization_endpoint,
-# token_endpoint, userinfo_endpoint, jwks_uri). When ALL of them are set,
-# well-known discovery is skipped entirely. jwks_uri is REQUIRED for ID token
-# verification if the issuer does not support discovery: the server now
-# verifies the ID token signature (RS256 via the JWKS) plus iss/aud/exp/nonce
-# on every login, and refuses to start when it cannot obtain a JWKS.
+# There is no redirect_uri setting here. The callback URL is derived from the
+# request scheme + host + base_url, so register that exact URL in the OIDC
+# provider.
+# Optional endpoint overrides. If all of them are set, discovery is skipped.
 # authorization_endpoint = "https://login.example.com/authorize"
 # token_endpoint = "https://login.example.com/token"
 # userinfo_endpoint = "https://login.example.com/userinfo"
 # jwks_uri = "https://login.example.com/jwks"
 
-# libfw file-transfer layer. Server knobs configure the embedded libfw router;
-# client knobs are served to the browser via /config.js (window.ONESHARE_LIBFW)
-# so the frontend configures the libfw-client SDK from this file.
 [libfw]
 # REQUIRED: 64-hex (32-byte) AES-256 key for libfw's EncryptedPathCodec.
-# Real storage paths are encrypted into opaque `v1.<base64url>` shadow paths
-# before anything reaches the browser — bearer tokens, `/file`/`/dir` URLs,
-# directory listings, upload echoes — so no real filesystem path ever leaves
-# the server. Generate with: openssl rand -hex 32
-# Keep it stable across restarts; rotating it invalidates outstanding tokens
-# (they expire within the 1h TTL anyway). The server refuses to start
-# without it.
+# Generate with: openssl rand -hex 32
+# Keep it stable across restarts; rotating it invalidates outstanding tokens.
 path_key = "<openssl rand -hex 32>"
-# Download compression served by the embedded server: "none" (default, safe
-# for plain browser fetches) or "zrip" (the SDK can decompress it). The SDK's
-# compress flag mirrors this.
+# Server-side compression used by the embedded libfw router.
+# "none" is the safe default for plain browser downloads.
+# "zrip" is allowed when the client can decode it.
 compression = "none"
-# Upper bound for a single upload body in bytes (default 100 GiB).
+# Upper bound for a single upload request body in bytes.
 max_upload_size = 107374182400
-# Client SDK options (defaults shown).
+# Browser-side libfw-client tuning values. These are served by /config.js so the
+# frontend uses the same values as the backend.
 concurrency = 4
-# One knob controls EVERY chunk size: this single value is used for upload
-# chunks AND download byte ranges (downloadChunkSize is set to this in the
-# frontend, instead of the SDK's default 256 KiB download chunks).
+# Upload chunk size and the download byte-range chunk size.
+# This single knob controls both upload chunks and download byte ranges.
 chunk_size = 2097152
-# Per-file scheduling window: parallel chunks in flight for one file.
-# Total in-flight upload requests ≈ concurrency × upload_window. Defaults to
-# 4 (same as concurrency) so uploads stay bounded; raise only if you want
-# deeper per-file pipelining.
+# Number of chunks for one file allowed in flight concurrently.
 upload_window = 4
-# Same knob on the download side: parallel byte ranges fetched per file.
-# Defaults to 4 (the SDK's own downloadWindow default); without this the
-# frontend would silently use the SDK default instead of a configured value.
+# Number of parallel byte ranges for one file on the download side.
 download_window = 4
+# Retry policy for transfer chunks/files.
 max_retries = 3
 base_retry_delay_ms = 500
 max_retry_delay_ms = 30000
-# Per-read (idle) timeout in ms. The libfw engine aborts the whole
-# transfer if ANY single read stalls longer than this — it is not a
-# total-transfer deadline. Keep it generous (default 600000 = 10 min) so a
-# slow link / large upload / high-latency reconciliation never kills a
-# healthy transfer; 0 disables the JS timer (browser network errors still
-# detect a dead peer).
+# Per-read idle timeout in milliseconds. Keep it generous, because this is a
+# read-level timeout, not a total-transfer deadline.
 timeout_ms = 600000
-# Adaptive tuning (libfw-client >= 0.3.3): when true, the browser probes the
-# server's public /capabilities advertisement and TCP-style ramps
-# concurrency / windows / chunk sizes (and the zrip level) from real
-# transfer stats, persisting a settled result per origin for tune_ttl_ms.
-# The static knobs above act as starting/minimum values. Default false —
-# transfers then behave exactly as configured.
+# When enabled, libfw-client may auto-tune from real transfer stats and persist
+# the result for tune_ttl_ms. The static values above remain the starting point.
 auto_tune = false
-# How long a settled tuning result is reused before re-ramping (ms).
-# Only meaningful with auto_tune = true. Default 3600000 (1 h).
+# Cache lifetime for settled auto-tuning results, in milliseconds.
 tune_ttl_ms = 3600000

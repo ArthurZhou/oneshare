@@ -517,14 +517,7 @@ async function runBatchDownloadTask(t, items) {
     updateTransfer(t.id, { status: 'done', done: knownTotal, total: knownTotal, finalizing: false });
     setTimeout(() => removeTransfer(t.id), 3000);
   } catch (e) {
-    const cancelled = e && (e.code === 'cancelled' || e.code === 'abort' || e.name === 'AbortError');
-    updateTransfer(t.id, {
-      status: cancelled ? 'cancelled' : 'error',
-      done: completed,
-      total: knownTotal,
-      error: cancelled ? '' : (e && e.message) || String(e),
-      finalizing: false,
-    });
+    finalizeTransferError(t, e, { done: completed, total: knownTotal });
   } finally {
     Libfw.setBatchReuse(false);
   }
@@ -984,6 +977,26 @@ function scheduleUploadRefresh() {
   uploadRefreshTimer = setTimeout(() => loadFiles(currentPath), 500);
 }
 
+function applyTransferProgress(t, ev) {
+  if (!ev || ev.type !== 'progress') return;
+  updateTransfer(t.id, {
+    done: ev.done,
+    total: ev.total,
+    finalizing: !!(ev.total > 0 && ev.done / ev.total >= 0.98),
+  });
+}
+
+function finalizeTransferError(t, e, override = {}) {
+  const cancelled = e && (e.code === 'cancelled' || e.code === 'abort' || e.name === 'AbortError');
+  updateTransfer(t.id, {
+    status: cancelled ? 'cancelled' : 'error',
+    done: override.done ?? t.done,
+    total: override.total ?? t.total,
+    error: cancelled ? '' : (e && e.message) || String(e),
+    finalizing: false,
+  });
+}
+
 async function handleUpload(input) {
   // Accept both raw File objects (legacy callers, e.g. a stale cached app.js)
   // and { file, relPath } items, then drop anything without a File.
@@ -1036,23 +1049,12 @@ async function runUploadTask(t, destPath, token, dirShadow, items) {
   renderTransfers();
   try {
     await Libfw.upload(destPath, token, dirShadow, items, (ev) => {
-      if (ev.type === 'progress') updateTransfer(t.id, {
-        done: ev.done,
-        total: ev.total,
-        // libfw 0.2.4 reports server-confirmed progress; the last ~2% is the
-        // brief "finalizing" tail before COMPLETE. Keep the animated bar so
-        // it reads as finishing rather than a frozen 99%.
-        finalizing: !!(ev.total > 0 && ev.done / ev.total >= 0.98),
-      });
+      applyTransferProgress(t, ev);
     }, (id) => { t.engineId = id; });
     updateTransfer(t.id, { status: 'done', done: t.total, finalizing: false });
     scheduleUploadRefresh();
   } catch (e) {
-    const cancelled = e && (e.code === 'cancelled' || e.code === 'abort' || e.name === 'AbortError');
-    updateTransfer(t.id, {
-      status: cancelled ? 'cancelled' : 'error',
-      error: cancelled ? '' : (e && e.message) || String(e),
-    });
+    finalizeTransferError(t, e);
   }
 }
 
@@ -1067,6 +1069,11 @@ async function runUploadTask(t, destPath, token, dirShadow, items) {
 
 function downloadFile(path, name) {
   (async () => {
+    // File System Access requires a live user gesture when the picker opens.
+    // Ask for the directory before any awaited token fetch so the browser keeps
+    // the activation alive; otherwise the SDK may throw SecurityError and fall
+    // back to a raw, non-chunked browser download.
+    await Libfw.ensureDirectoryHandle();
     const tokenResp = await API.getToken(path, 'read');
     const t = { kind: 'download', name, total: 0, done: 0, status: 'active', error: null };
     addTransfer(t);
@@ -1084,32 +1091,27 @@ async function runFileDownloadTask(t, path, name, token) {
   t.finalizing = false;
   renderTransfers();
   try {
-    const progress = (ev) => {
-      if (ev.type === 'progress') updateTransfer(t.id, {
-        done: ev.done,
-        total: ev.total,
-        finalizing: !!(ev.total > 0 && ev.done / ev.total >= 0.98),
-      });
-    };
     // libfw-client 0.3.0 saves the file itself (streamed into a user-picked
     // directory via FS API, or via a traditional browser download). The SDK
     // sends the opaque shadow path over HTTP; the embedded server decodes it
     // to the real path the token is bound to. `name` is the display leaf
     // name the file is saved under — the shadow would be a useless filename.
-    const done = await Libfw.downloadFile(token, path, name, progress, (id) => { t.engineId = id; });
+    const done = await Libfw.downloadFile(token, path, name, (ev) => {
+      applyTransferProgress(t, ev);
+    }, (id) => { t.engineId = id; });
     updateTransfer(t.id, { status: 'done', done, finalizing: false });
     setTimeout(() => removeTransfer(t.id), 3000);
   } catch (e) {
-    const cancelled = e && (e.code === 'cancelled' || e.code === 'abort' || e.name === 'AbortError');
-    updateTransfer(t.id, {
-      status: cancelled ? 'cancelled' : 'error',
-      error: cancelled ? '' : (e && e.message) || String(e),
-    });
+    finalizeTransferError(t, e);
   }
 }
 
 function downloadFolder(path, name) {
   (async () => {
+    // Keep the directory-picker call in the same user-gesture chain as the
+    // click, otherwise the browser rejects it with SecurityError and the SDK
+    // may then fall back to a whole-file browser download.
+    await Libfw.ensureDirectoryHandle();
     const tokenResp = await API.getToken(path, 'read');
     const t = { kind: 'download', name, total: 0, done: 0, status: 'active', error: null };
     addTransfer(t);
@@ -1132,20 +1134,12 @@ async function runFolderDownloadTask(t, path, name, token) {
     // shadow path; the embedded server decodes it to the real root path the
     // token is bound to, and every listed child comes back as a shadow too.
     const bytes = await Libfw.downloadFolder(token, path, (ev) => {
-      if (ev.type === 'progress') updateTransfer(t.id, {
-        done: ev.done,
-        total: ev.total,
-        finalizing: !!(ev.total > 0 && ev.done / ev.total >= 0.98),
-      });
+      applyTransferProgress(t, ev);
     }, (id) => { t.engineId = id; });
     updateTransfer(t.id, { status: 'done', done: bytes, finalizing: false });
     setTimeout(() => removeTransfer(t.id), 3000);
   } catch (e) {
-    const cancelled = e && (e.code === 'cancelled' || e.code === 'abort' || e.name === 'AbortError');
-    updateTransfer(t.id, {
-      status: cancelled ? 'cancelled' : 'error',
-      error: cancelled ? '' : (e && e.message) || String(e),
-    });
+    finalizeTransferError(t, e);
   }
 }
 

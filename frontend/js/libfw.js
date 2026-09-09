@@ -35,6 +35,9 @@
     compress: served.compress !== false,
     concurrency: typeof served.concurrency === 'number' ? served.concurrency : 4,
     chunkSize: typeof served.chunkSize === 'number' ? served.chunkSize : 2 * 1024 * 1024,
+    downloadChunkSize: typeof served.downloadChunkSize === 'number'
+      ? served.downloadChunkSize
+      : (typeof served.chunkSize === 'number' ? served.chunkSize : 2 * 1024 * 1024),
     // Per-file scheduling window (parallel chunks in flight per file).
     // Total in-flight chunks ≈ concurrency × uploadWindow; defaults to
     // concurrency so uploads stay bounded by the configured knob.
@@ -65,6 +68,52 @@
     tuneTtlMs: typeof served.tuneTtlMs === 'number' ? served.tuneTtlMs : 3600000,
   };
 
+  // Try to fetch the server's `/capabilities` advertisement and apply any
+  // advertised `default` start values into `opts`. This is best-effort and
+  // does not block SDK initialization; it helps the client start with the
+  // same starting point the server advises (reduces race between SDK and
+  // server when tuning is enabled).
+  (async function fetchCapabilitiesAndMerge() {
+    try {
+      const url = (base || '') + '/capabilities';
+      const res = await fetch(url, { cache: 'no-store', credentials: 'same-origin' });
+      if (!res.ok) return;
+      const j = await res.json();
+      const limits = j && j.limits;
+      if (!limits || typeof limits !== 'object') return;
+
+      const getDefault = (k) => {
+        const v = limits[k];
+        if (!v) return undefined;
+        if (typeof v === 'object' && v.default != null) return Number(v.default);
+        return undefined;
+      };
+
+      const maybeSet = (field, val) => {
+        if (typeof val === 'number' && !Number.isNaN(val)) opts[field] = val;
+      };
+
+      // Range knobs: use advertised `default` when present.
+      maybeSet('concurrency', getDefault('concurrency') ?? opts.concurrency);
+      maybeSet('uploadWindow', getDefault('uploadWindow') ?? opts.uploadWindow);
+      maybeSet('downloadWindow', getDefault('downloadWindow') ?? opts.downloadWindow);
+      // chunkSize may be the unified knob; use it first.
+      maybeSet('chunkSize', getDefault('chunkSize') ?? opts.chunkSize);
+      // downloadChunkSize fallback: prefer its default if present.
+      maybeSet('downloadChunkSize', getDefault('downloadChunkSize') ?? opts.downloadChunkSize);
+
+      // Scalar knobs
+      if (limits.maxRetries != null && typeof limits.maxRetries === 'number') {
+        opts.maxRetries = limits.maxRetries;
+      }
+      if (limits.timeoutMs != null && typeof limits.timeoutMs === 'number') {
+        opts.timeoutMs = limits.timeoutMs;
+      }
+    } catch (e) {
+      // best-effort: ignore network/parse errors
+    }
+  })();
+
   // Latest adaptive-tuning state (phase + params + last-window stats), kept
   // on the facade so the UI can render a live tuning readout without losing
   // events fired before the transfers panel subscribed. `onTuningChange` is a
@@ -79,301 +128,40 @@
   // ── SDK classes (the UMD bundle exports them on window.LibfwClient) ──
   const Sdk = window.LibfwClient || {};
   const LibfwClientClass = Sdk.LibfwClient || Sdk.default;
-  const LibfwError = Sdk.LibfwError ||
-    class LibfwError extends Error {
-      constructor(message, code) {
-        super(message);
-        this.name = 'LibfwError';
-        this.code = code || 'unknown';
-      }
-    };
 
   if (typeof LibfwClientClass !== 'function') {
     console.error('[oneshare] libfw-client SDK not loaded — file transfers will be unavailable');
   }
 
-  // ── `x-libfw-file-meta` is base64 since libfw 0.1.2 ──
-  // libfw-core 0.1.2's `encode_file_meta_header` (compiled into the WASM
-  // engine) base64-encodes the meta JSON on the wire, so CJK filenames
-  // survive HTTP headers with no JS-side header patching.
+  // The upstream libfw 0.4.x SDK already covers the functionality we used to
+  // patch ourselves: directory-handle reuse, display-name mapping, and upload
+  // path resolution are all exposed as public options. Keep only the app-level
+  // integration here and let the SDK own the heavy lifting.
+  const displayNameCache = new Map();
+  const displayNameResolves = new Map();
 
-  // ── Upload client: plan paths are per-file opaque shadows ──
-  // The SDK POSTs to `/file/{path}` for each plan entry. libfw-server's
-  // `resolve_client_path` supports **hierarchical composition**: a directory
-  // shadow with literal segments appended (`{dirShadow}/sub/file`) decodes
-  // the longest decodable prefix and appends the rest verbatim, then
-  // authorizes the combined real path. So one directory shadow covers the
-  // whole subtree — plan paths are `{dirShadow}/{rel}` and no per-file
-  // tokens/shadows are minted (the upload token from the initial getToken
-  // already covers every child with prefix semantics on the decoded path).
-  class OneshareLibfwClient extends LibfwClientClass {
-    constructor(options) {
-      super(options);
-      this._uploadDest = '';
-      // Directory shadow of the upload target (from the token response at
-      // transfer start) — prefix for every plan path; see class comment.
-      this._uploadDirShadow = '';
-      // Shadow → display path, populated lazily while downloads run so the
-      // SDK writes files/dirs under their real names instead of `v1.…`
-      // shadows.
-      this._displayMap = new Map();
-      this._nameResolves = new Map();
-      // Leaf name for single-file downloads (the explorer passes the display
-      // name it already has — no extra resolve needed).
-      this._leafName = null;
-    }
-    async _collectProvidedFiles(files) {
-      const items = Array.from(files || []);
-      const plan = [];
-      for (const it of items) {
-        const file = it instanceof File ? it : (it && it.file);
-        if (!(file instanceof File)) continue;
-        const rel = String((it && it.relPath) || file.webkitRelativePath || file.name)
-          .replace(/^\/+/, '');
-        if (!rel) continue;
-        // Compound shadow: the directory shadow + the literal relative path.
-        // The server's `decode_compound` splits at `/` until the prefix
-        // decodes, so `rel`'s own separators and special characters are fine
-        // (the SDK percent-encodes the URL path; axum decodes it back).
-        const planPath = this._uploadDirShadow ? `${this._uploadDirShadow}/${rel}` : rel;
-        this._uploadFiles.set(planPath, file);
-        plan.push({
-          path: planPath,
-          size: file.size,
-          mtime: Math.floor(file.lastModified / 1e3),
-        });
-      }
-      plan.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
-      return plan;
-    }
+  async function resolveDisplayName(shadow) {
+    const key = String(shadow || '');
+    if (!key) return key;
+    if (displayNameCache.has(key)) return displayNameCache.get(key);
+    if (displayNameResolves.has(key)) return displayNameResolves.get(key);
 
-    // Single-file download: the SDK writes `filePath` preserving its path
-    // structure under the picked directory, but in a file manager a single
-    // file should land at the ROOT of the picked directory under its own
-    // (leaf) name (`leafName` is the display name from the listing row; the
-    // transfer path is an opaque shadow, unusable as a filename).
-    //
-    // We keep the SDK's default `downloadMode: 'auto'`:
-    //   - FS API available → stream the file into a user-picked directory,
-    //     so arbitrarily large single files work with no in-memory cap;
-    //   - FS API unavailable → save via a normal browser download.
-    // The in-memory `maxFallbackBytes` cap only ever applies on non-FSAPI
-    // devices (the browser path), and there it is mainly relevant to FOLDER
-    // downloads (folders are buffered and zipped in memory). Single files on
-    // non-FSAPI devices use a direct browser download and need no picker.
-    async downloadFile(token, filePath, leafName) {
-      this._downloadAsLeaf = true;
-      this._leafName = leafName || null;
-      try {
-        return await this._withReusedDirHandle(() => super.downloadFile(token, filePath));
-      } finally {
-        this._downloadAsLeaf = false;
-        this._leafName = null;
-      }
-    }
-
-    // Folder download: shadows are minted per listing with fresh random
-    // nonces, so no pre-walk can correlate names across the SDK's own `/dir`
-    // requests — resolution must happen per path, lazily, from the paths the
-    // SDK actually uses (fileStart/writeChunk callbacks). The root shadow is
-    // also mapped so the fallback zip archive is named after the directory
-    // (not the opaque `v1.…` shadow).
-    async downloadFolder(token, filePath) {
-      if (filePath) this._ensureMapped(filePath).catch(() => {});
-      return this._withReusedDirHandle(() => super.downloadFolder(token, filePath));
-    }
-
-    // ── Batch downloads（多选合并下载）──
-    //
-    // The SDK's downloadFile/downloadFolder call `window.showDirectoryPicker`
-    // unconditionally, so a multi-select download would prompt once PER item.
-    // While `_batchReuse` is set and a directory handle was already picked
-    // (by the batch's first item), the picker is stubbed to return the SAME
-    // handle — one prompt for the whole batch, everything lands in it.
-    _withReusedDirHandle(run) {
-      const reusable = this._batchReuse && this._dirHandle
-        && typeof window !== 'undefined' && typeof window.showDirectoryPicker === 'function';
-      if (!reusable) return run();
-      const orig = window.showDirectoryPicker;
-      window.showDirectoryPicker = async () => this._dirHandle;
-      try {
-        return run();
-      } finally {
-        window.showDirectoryPicker = orig;
-      }
-    }
-
-    // Shadow → display path, resolved lazily from `/api/files/names` and
-    // cached. Used so downloads write files/dirs under their real names
-    // instead of opaque `v1.…` shadows. Concurrent callers share one
-    // in-flight request per shadow.
-    _ensureMapped(shadow) {
-      if (this._displayMap.has(shadow)) return Promise.resolve(this._displayMap.get(shadow));
-      if (this._nameResolves.has(shadow)) return this._nameResolves.get(shadow);
-      const base = this._options.baseUrl || '';
-      const p = fetch(base + '/api/files/names?paths=' + encodeURIComponent(shadow), {
-        credentials: 'same-origin',
+    const p = fetch((base || '') + '/api/files/names?paths=' + encodeURIComponent(key), {
+      credentials: 'same-origin',
+    })
+      .then((r) => {
+        if (!r.ok) throw new Error('name resolution failed: HTTP ' + r.status);
+        return r.json();
       })
-        .then((r) => {
-          if (!r.ok) throw new Error('name resolution failed: HTTP ' + r.status);
-          return r.json();
-        })
-        .then((m) => {
-          const display = m[shadow] || shadow;
-          this._displayMap.set(shadow, display);
-          return display;
-        })
-        .finally(() => this._nameResolves.delete(shadow));
-      this._nameResolves.set(shadow, p);
-      return p;
-    }
+      .then((m) => {
+        const display = m[key] || key;
+        displayNameCache.set(key, display);
+        return display;
+      })
+      .finally(() => displayNameResolves.delete(key));
 
-    _flushNameResolves() {
-      return Promise.allSettled([...this._nameResolves.values()]);
-    }
-
-    // The SDK emits fileStart before a file's data flows; kick the name
-    // resolution off immediately so the (sync) zip build at the end never
-    // waits on it.
-    _emit(ev) {
-      if (ev && ev.type === 'fileStart') this._ensureMapped(ev.path).catch(() => {});
-      return super._emit(ev);
-    }
-
-    // While `_downloadAsLeaf` is set, ignore the path structure and write
-    // just the leaf segment into the picked directory. libfw-client 0.1.3's
-    // `_ensureFileHandle` returns `{ dir, name, handle }`, so the leaf
-    // override must return the same shape. Mapped display names are used
-    // everywhere so downloads never carry `v1.…` shadow names.
-    async _ensureFileHandle(path) {
-      if (!this._downloadAsLeaf) {
-        const display = await this._ensureMapped(path);
-        return super._ensureFileHandle(display);
-      }
-      const segs = String(this._displayMap.get(path) || path).split('/').filter(Boolean);
-      const leaf = this._leafName || (segs.length ? segs[segs.length - 1] : 'download');
-      const handle = await this._dirHandle.getFileHandle(leaf, { create: true });
-      return { dir: this._dirHandle, name: leaf, handle };
-    }
-
-    _safeEntryName(path) {
-      return super._safeEntryName(this._displayMap.get(path) || path);
-    }
-
-    _downloadName(path) {
-      if (this._downloadAsLeaf && this._leafName) return this._leafName;
-      return super._downloadName(this._displayMap.get(path) || path);
-    }
-
-    // Name of the fallback zip archive. The SDK's default uses the raw plan
-    // path (an opaque `v1.…` shadow for a folder download), which would name
-    // the zip after the shadow — override with the resolved display path.
-    _archiveName(path) {
-      return super._archiveName(this._displayMap.get(path) || path);
-    }
-
-    // Copy of libfw-client's browser-download fallback with one addition:
-    // pending shadow→display resolutions are flushed before the zip entries
-    // are named (names are looked up synchronously there). Keep in sync with
-    // the vendored SDK.
-    async _downloadViaBrowser(engine, token, path, isFolder) {
-      this._fallback = { isFolder, buffers: new Map(), order: [], sizes: new Map(), total: 0 };
-      try {
-        const r = isFolder
-          ? await engine.download_folder(this._options.baseUrl, token, path)
-          : await engine.download_file(this._options.baseUrl, token, path);
-        await this._flushNameResolves();
-        const { buffers: bufs, order, sizes } = this._fallback;
-        if (isFolder) {
-          const d = [];
-          for (const w of order) {
-            d.push({ name: this._safeEntryName(w), data: this._concatBuffers(bufs.get(w)?.chunks || []) });
-          }
-          for (const k of sizes.keys()) {
-            if (!bufs.has(k)) d.push({ name: this._safeEntryName(k), data: new Uint8Array(0) });
-          }
-          this._triggerBrowserDownload(this._zipEntries(d), this._archiveName(path));
-        } else {
-          const data = this._concatBuffers(bufs.get(path)?.chunks || []);
-          this._triggerBrowserDownload(new Blob([data], { type: 'application/octet-stream' }), this._downloadName(path));
-        }
-        return r;
-      } finally {
-        this._fallback = null;
-      }
-    }
-
-    // Zip builder — same output as the vendored SDK's internal `V()`.
-    _zipEntries(items) {
-      let offset = 0;
-      const crcTable = new Uint32Array(256);
-      for (let n = 0; n < 256; n++) {
-        let c = n;
-        for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
-        crcTable[n] = c >>> 0;
-      }
-      const crc32 = (bytes) => {
-        let c = 0xffffffff;
-        for (const b of bytes) c = crcTable[(c ^ b) & 0xff] ^ (c >>> 8);
-        return (c ^ 0xffffffff) >>> 0;
-      };
-      const enc = new TextEncoder();
-      const chunks = [];
-      const entries = [];
-      for (const it of items) {
-        const nameBytes = enc.encode(it.name);
-        const data = it.data;
-        const crc = crc32(data);
-        const head = new Uint8Array(30 + nameBytes.length);
-        const dv = new DataView(head.buffer);
-        dv.setUint32(0, 0x04034b50, true);
-        dv.setUint16(4, 20, true);
-        dv.setUint16(6, 0, true);
-        dv.setUint16(8, 0, true);
-        dv.setUint16(10, 0, true);
-        dv.setUint16(12, 33, true);
-        dv.setUint32(14, crc, true);
-        dv.setUint32(18, data.length, true);
-        dv.setUint32(22, data.length, true);
-        dv.setUint16(26, nameBytes.length, true);
-        dv.setUint16(28, 0, true);
-        head.set(nameBytes, 30);
-        chunks.push(head, data);
-        entries.push({ nameBytes, crc, size: data.length, offset });
-        offset += head.length + data.length;
-      }
-      const central = [];
-      let cdOffset = offset;
-      for (const e of entries) {
-        const rec = new Uint8Array(46 + e.nameBytes.length);
-        const dv = new DataView(rec.buffer);
-        dv.setUint32(0, 0x02014b50, true);
-        dv.setUint16(4, 20, true);
-        dv.setUint16(6, 20, true);
-        dv.setUint16(8, 0, true);
-        dv.setUint16(10, 0, true);
-        dv.setUint16(12, 33, true);
-        dv.setUint32(16, e.crc, true);
-        dv.setUint32(20, e.size, true);
-        dv.setUint32(24, e.size, true);
-        dv.setUint16(28, e.nameBytes.length, true);
-        dv.setUint16(30, 0, true);
-        dv.setUint32(32, 0, true);
-        dv.setUint32(36, 0, true);
-        dv.setUint32(42, e.offset, true);
-        rec.set(e.nameBytes, 46);
-        central.push(rec);
-      }
-      const end = new Uint8Array(22);
-      const edv = new DataView(end.buffer);
-      edv.setUint32(0, 0x06054b50, true);
-      edv.setUint16(8, entries.length, true);
-      edv.setUint16(10, entries.length, true);
-      edv.setUint32(12, central.reduce((s, c) => s + c.length, 0), true);
-      edv.setUint32(16, cdOffset, true);
-      chunks.push(...central, end);
-      return new Blob(chunks, { type: 'application/zip' });
-    }
+    displayNameResolves.set(key, p);
+    return p;
   }
 
   // ── Libfw facade ──
@@ -384,6 +172,26 @@
     _client: null,
     _chain: Promise.resolve(),
     _activeOnEvent: null,
+    _dirHandle: null,
+    _batchReuse: false,
+
+    async ensureDirectoryHandle() {
+      if (this._dirHandle) return this._dirHandle;
+      if (typeof window === 'undefined' || typeof window.showDirectoryPicker !== 'function') {
+        throw new Error('当前浏览器不支持目录选择，无法按分片方式下载。');
+      }
+      try {
+        const handle = await window.showDirectoryPicker();
+        this._dirHandle = handle;
+        return handle;
+      } catch (e) {
+        const msg = e && (e.name || e.code) ? String(e.name || e.code) : String(e);
+        if (msg.includes('SecurityError') || msg.includes('User activation')) {
+          throw new Error('下载需要在点击后立即选择目录，请重试一次。');
+        }
+        throw e;
+      }
+    },
 
     // Per-transfer identity: `_activeId` is the transfer currently running
     // in the engine; `_cancelledIds` holds ids of QUEUED transfers that were
@@ -412,15 +220,12 @@
 
     _getClient(destPath) {
       if (!this._client && LibfwClientClass) {
-        this._client = new OneshareLibfwClient({
+        this._client = new LibfwClientClass({
           baseUrl: base,
           concurrency: opts.concurrency,
           compress: opts.compress,
-          // One knob controls every chunk size: upload chunks AND download
-          // byte ranges both use `chunk_size` (otherwise the SDK falls back
-          // to its own 256 KiB download default).
           chunkSize: opts.chunkSize,
-          downloadChunkSize: opts.chunkSize,
+          downloadChunkSize: opts.downloadChunkSize,
           uploadWindow: opts.uploadWindow,
           downloadWindow: opts.downloadWindow,
           maxRetries: opts.maxRetries,
@@ -429,13 +234,26 @@
           timeoutMs: opts.timeoutMs,
           autoTune: opts.autoTune,
           tuneTtlMs: opts.tuneTtlMs,
-          // Release builds cache the wasm immutably keyed by the bundle
-          // version; point the SDK at the versioned URL. Debug (no version)
-          // keeps the default script-relative resolution.
           wasmUrl: bundleVersion
             ? (base || '') + '/vendor/libfw_client_bg.wasm?v=' + encodeURIComponent(bundleVersion)
             : undefined,
           onEvent: (ev) => this._handleEvent(ev),
+          directoryHandle: async () => {
+            if (this._batchReuse && this._dirHandle) return this._dirHandle;
+            return this.ensureDirectoryHandle();
+          },
+          resolveDisplayName: async (shadow) => {
+            const value = await resolveDisplayName(shadow);
+            return value || shadow;
+          },
+          resolveUploadPath: async (entry, defaultPath) => {
+            const raw = (entry && typeof entry === 'object' && typeof entry.relPath === 'string' && entry.relPath)
+              ? entry.relPath
+              : defaultPath;
+            const rel = String(raw || '').replace(/^\/+/, '');
+            if (!rel) return defaultPath || '';
+            return this._uploadDirShadow ? `${this._uploadDirShadow}/${rel}` : rel;
+          },
         });
       }
       if (this._client) this._client._uploadDest = destPath || '';
@@ -482,7 +300,7 @@
       return this._enqueue(id, async () => {
         const client = this._getClient(destPath);
         if (!client) throw new Error('libfw-client SDK not loaded');
-        client._uploadDirShadow = dirShadow || this._uploadDirShadow || '';
+        this._uploadDirShadow = dirShadow || this._uploadDirShadow || '';
         // A file manager always wants a FRESH upload (a stale persisted
         // "upload complete" for the same path would otherwise make the SDK
         // skip a re-upload of an unchanged file). libfw-client 0.1.3 exposes
@@ -558,13 +376,13 @@
     pause() { if (this._client) { try { this._client.pause(); } catch (e) { /* noop */ } } },
     resume() { if (this._client) { try { this._client.resume(); } catch (e) { /* noop */ } } },
 
-    // Batch download mode: create the client if needed and flag it so every
-    // download of the batch reuses the directory picked by its first item
-    // (see OneshareLibfwClient._withReusedDirHandle). Pass `false` when the
-    // batch ends.
+    // Batch download mode: keep a single directory handle for the whole batch,
+    // reusing it through the SDK's public `directoryHandle` option. Pass
+    // `false` when the batch ends.
     setBatchReuse(on) {
+      this._batchReuse = !!on;
+      if (!this._batchReuse) this._dirHandle = null;
       if (on) this._getClient('');
-      if (this._client) this._client._batchReuse = !!on;
     },
   };
 

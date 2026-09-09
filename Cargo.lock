@@ -906,9 +906,9 @@ checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
 
 [[package]]
 name = "libfw-core"
-version = "0.4.0"
+version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "53421ca894190285d89ebb60d62bcc1c864c683050f3b8dc6a59bdd613df6478"
+checksum = "de9885dab6127f6f5749517a78449f258c10449a2cf27e8ea2b37238a4c356ba"
 dependencies = [
  "aes-gcm",
  "async-trait",
@@ -923,9 +923,9 @@ dependencies = [
 
 [[package]]
 name = "libfw-server"
-version = "0.4.0"
+version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "182254986c81795394ad5e4821b5459304d25c5324bc96efa8fee82c14962eb9"
+checksum = "d6f241b004088176dc6e973fe49fda3eb70b86aa25c375f74a7ab308e01f564d"
 dependencies = [
  "async-trait",
  "axum",
@@ -937,11 +937,9 @@ dependencies = [
  "serde_json",
  "sha2",
  "thiserror",
- "time",
  "tokio",
  "tokio-stream",
  "tower 0.5.3",
- "tower-http 0.6.11",
  "tracing",
 ]
 
@@ -1057,7 +1055,7 @@ checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 
 [[package]]
 name = "oneshare"
-version = "0.1.17"
+version = "0.2.0"
 dependencies = [
  "axum",
  "axum-extra",
@@ -1934,7 +1932,6 @@ dependencies = [
  "tower 0.5.3",
  "tower-layer",
  "tower-service",
- "tracing",
  "url",
 ]
 

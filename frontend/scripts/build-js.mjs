@@ -21,21 +21,46 @@ const outDir = join(root, '..', 'static', 'js');
 await mkdir(outDir, { recursive: true });
 
 const files = (await readdir(srcDir)).filter((f) => f.endsWith('.js'));
+// Preserve a deterministic load order that matches index.html so globals and
+// initializers are available when later scripts run. Files not listed here
+// are appended afterwards.
+const preferredOrder = [
+  'api.js',
+  'icons.js',
+  'libfw.js',
+  'auth.js',
+  'file-explorer.js',
+  'admin.js',
+  'app.js',
+];
+files.sort((a, b) => {
+  const ia = preferredOrder.indexOf(a);
+  const ib = preferredOrder.indexOf(b);
+  if (ia === -1 && ib === -1) return a.localeCompare(b);
+  if (ia === -1) return 1;
+  if (ib === -1) return -1;
+  return ia - ib;
+});
 if (files.length === 0) {
   throw new Error(`no .js files found under ${srcDir}`);
 }
 
-for (const f of files) {
-  const code = await readFile(join(srcDir, f), 'utf8');
-  const { code: min } = await transform(code, {
-    loader: 'js',
-    minify: true,
-    // Match the browsers Vite targets; keeps optional chaining etc. working.
-    target: 'es2018',
-  });
-  await writeFile(join(outDir, f), min);
-  console.log(`minified js/${f}: ${code.length} -> ${min.length} bytes`);
-}
+// Minify each classic script, then concatenate them into a single legacy
+// bundle so the production frontend can load everything with one request.
+// The vendor libfw-client remains a separate bundle (built below) and must
+// be loaded before this combined file in index.html.
+const pieces = [];
+        for (const f of files) {
+          const code = await readFile(join(srcDir, f), 'utf8');
+          const { code: min } = await transform(code, {
+            loader: 'js',
+            minify: true,
+            // Match the browsers Vite targets; keeps optional chaining etc. working.
+            target: 'es2018',
+          });
+          await writeFile(join(outDir, f), min);
+          console.log(`minified js/${f}: ${code.length} -> ${min.length} bytes`);
+        }
 
 // Build the vendored libfw SDK (a `window.LibfwClient` classic-script/IIFE
 // bundle) directly from the installed npm package with esbuild, then copy the
