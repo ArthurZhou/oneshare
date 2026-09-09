@@ -1,5 +1,6 @@
 pub mod auth;
 pub mod files;
+pub mod share;
 pub mod admin;
 
 use axum::{

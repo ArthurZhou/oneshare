@@ -29,6 +29,7 @@
     </div>
     <div class="toolbar-right">
       <button id="btn-refresh" class="btn" title="刷新"><i data-feather="refresh-cw"></i></button>
+      <button id="btn-my-shares" class="btn" title="我的分享" style="display:none"><i data-feather="share-2"></i> 分享</button>
       <button id="btn-admin" class="btn btn-admin" title="管理员面板" style="display:none"><i data-feather="settings"></i> 管理员</button>
     </div>
   </div>
@@ -45,9 +46,18 @@
 <!-- Context Menu -->
 <div id="ctx-menu" class="ctx-menu" style="display:none">
   <div class="ctx-item" data-action="download"><i data-feather="download"></i> 下载</div>
+  <div class="ctx-item" data-action="share"><i data-feather="share-2"></i> 分享</div>
   <div class="ctx-item" data-action="rename"><i data-feather="edit-2"></i> 重命名</div>
-  <div class="ctx-item" data-action="move"><i data-feather="corner-up-right"></i> 移动</div>
   <div class="ctx-item ctx-danger" data-action="delete"><i data-feather="trash-2"></i> 删除</div>
+</div>
+
+<!-- Multi-select action bar (shown while files/folders are selected) -->
+<div id="selection-bar" class="selection-bar" style="display:none">
+  <span id="selection-count">已选择 0 项</span>
+  <button id="sel-download" class="btn btn-sm" title="下载选中项">下载</button>
+  <button id="sel-share" class="btn btn-sm" title="批量分享（生成一个包含全部选中项的链接）">分享</button>
+  <button id="sel-delete" class="btn btn-sm btn-danger" title="删除选中项">删除</button>
+  <button id="sel-clear" class="btn btn-sm" title="取消选择">取消</button>
 </div>
 
 <!-- Modal -->

@@ -464,6 +464,9 @@ const AUDIT_ACTIONS = [
   ['group.member.remove', '移除成员'],
   ['acl.set', '设置权限'],
   ['acl.remove', '移除权限'],
+  ['share.create', '创建分享'],
+  ['share.delete', '取消分享'],
+  ['share.access', '分享被访问'],
   ['audit.clear', '清空审计日志'],
 ];
 

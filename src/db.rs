@@ -1,5 +1,5 @@
 use rusqlite::{Connection, params};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 pub struct Database {
     pub conn: Mutex<Connection>,
@@ -8,7 +8,27 @@ pub struct Database {
     /// display name or OIDC subject) and never read from the database, so
     /// granting/revoking admin is a config edit, not a DB write.
     pub admin_user: Option<String>,
+    /// Process-wide snapshot of the ACL table. ACLs are read on EVERY file
+    /// request; the table is tiny and changes rarely, so it is cached here
+    /// and invalidated on every write (admin ACL edits, share create/revoke,
+    /// cleanup). Clone-on-read shares one Arc with all concurrent requests.
+    acl_cache: Mutex<Option<Arc<Vec<AclEntryRow>>>>,
 }
+
+/// Reserved `oidc_sub` namespace for temporary share identities. Deliberately
+/// long and specific so a real OIDC subject cannot collide with it. A share
+/// visitor is a fully VIRTUAL identity (no `users`/`groups_` rows — exactly
+/// like the synthetic guest); the prefix marks its synthetic `oidc_sub` so
+/// admin-flag derivation and re-share checks can recognize it.
+pub const SHARE_SUB_PREFIX: &str = "oneshare-share:";
+
+/// Synthetic user id for temporary share-link identities. Like
+/// [`GUEST_USER_ID`](crate::auth::session::GUEST_USER_ID) (-1), it is negative
+/// so it can never collide with a real `users.id` (positive autoincrement).
+/// Share visitors' permissions come from
+/// [`Database::get_share_acl_entries`], which synthesizes ACL entries owned
+/// by this id — no row is ever written to `acl_entries`.
+pub const SHARE_USER_ID: i64 = -2;
 
 impl Database {
     pub fn new(path: &str, admin_user: Option<String>) -> Result<Self, rusqlite::Error> {
@@ -16,6 +36,7 @@ impl Database {
         let db = Database {
             conn: Mutex::new(conn),
             admin_user,
+            acl_cache: Mutex::new(None),
         };
         db.migrate()?;
         Ok(db)
@@ -28,6 +49,14 @@ impl Database {
     /// fresh on every load: the database value is ignored, so config changes
     /// take effect on the user's next request without re-login.
     fn apply_admin_flag(&self, mut user: UserRow) -> UserRow {
+        // Temporary share-link identities (oidc_sub oneshare-share:<token>)
+        // can NEVER be admins: their display_name is attacker-influenced (the
+        // share title = shared file names), so a config `admin_user` match
+        // would be a privilege-escalation vector.
+        if user.oidc_sub.starts_with(SHARE_SUB_PREFIX) {
+            user.is_admin = 0;
+            return user;
+        }
         if let Some(name) = &self.admin_user {
             user.is_admin = (name == &user.display_name || name == &user.oidc_sub) as i64;
         }
@@ -95,6 +124,42 @@ impl Database {
 
             CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_log(ts);
             CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_log(action);
+
+            -- Temporary share links (the share feature). A link grants READ-ONLY
+            -- access to exactly one file or folder tree, without login, until
+            -- it expires (expires_at NULL = never). The stored path is the
+            -- REAL path under the root; `display_path` keeps the path as the
+            -- creating user saw it so the list UI never leaks real paths.
+            CREATE TABLE IF NOT EXISTS share_links (
+                token TEXT PRIMARY KEY,
+                real_path TEXT NOT NULL,
+                display_path TEXT NOT NULL DEFAULT '',
+                name TEXT NOT NULL,
+                is_dir INTEGER NOT NULL DEFAULT 0,
+                created_by INTEGER NOT NULL,
+                creator TEXT NOT NULL DEFAULT '',
+                expires_at TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_share_links_expires ON share_links(expires_at);
+            CREATE INDEX IF NOT EXISTS idx_share_links_creator ON share_links(created_by);
+
+            -- Items of a MULTI-ITEM share (a virtual-root collection:
+            -- share_links.real_path = '' and is_dir = 1, with one row here per
+            -- top-level item). Single-file/folder shares store their path
+            -- directly in share_links and have no rows here.
+            CREATE TABLE IF NOT EXISTS share_items (
+                token TEXT NOT NULL,
+                real_path TEXT NOT NULL,
+                display_path TEXT NOT NULL DEFAULT '',
+                name TEXT NOT NULL,
+                is_dir INTEGER NOT NULL DEFAULT 0,
+                position INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (token, real_path)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_share_items_token ON share_items(token);
             ",
         )?;
 
@@ -116,12 +181,11 @@ impl Database {
             [],
         )?;
 
-        // The ACL-level "admin" permission was removed (full control is the
-        // `is_admin` user flag, which bypasses ACLs entirely). Map any legacy
-        // rows to `write`, the closest remaining capability. Idempotent:
-        // re-running matches nothing. NOTE: older databases keep their original
-        // CHECK constraint (SQLite cannot ALTER one), which still accepts
-        // read/write — that is all we ever store.
+        // One-time migration (pre-share-group era): map the removed ACL-level
+        // "admin" permission to `write`, the closest remaining capability.
+        // Idempotent: re-running matches nothing. NOTE: older databases keep
+        // their original CHECK constraint (SQLite cannot ALTER one), which
+        // still accepts read/write — that is all we ever store.
         conn.execute(
             "UPDATE acl_entries SET permission='write' WHERE permission='admin'",
             [],
@@ -499,17 +563,23 @@ impl Database {
         group_id: Option<i64>,
         permission: &str,
     ) -> Result<(), rusqlite::Error> {
-        let conn = self.conn.lock().unwrap();
-        conn.execute(
-            "INSERT INTO acl_entries (path, user_id, group_id, permission) VALUES (?1, ?2, ?3, ?4)",
-            params![path, user_id, group_id, permission],
-        )?;
+        {
+            let conn = self.conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO acl_entries (path, user_id, group_id, permission) VALUES (?1, ?2, ?3, ?4)",
+                params![path, user_id, group_id, permission],
+            )?;
+        }
+        self.invalidate_acl_cache();
         Ok(())
     }
 
     pub fn remove_acl(&self, acl_id: i64) -> Result<(), rusqlite::Error> {
-        let conn = self.conn.lock().unwrap();
-        conn.execute("DELETE FROM acl_entries WHERE id = ?", params![acl_id])?;
+        {
+            let conn = self.conn.lock().unwrap();
+            conn.execute("DELETE FROM acl_entries WHERE id = ?", params![acl_id])?;
+        }
+        self.invalidate_acl_cache();
         Ok(())
     }
 
@@ -533,6 +603,23 @@ impl Database {
             })?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(rows)
+    }
+
+    /// Cached variant of [`Database::list_acl_entries`] — the ACL table is
+    /// read on EVERY file request but changes rarely, so keep one shared
+    /// snapshot and drop it on any write ([`Database::invalidate_acl_cache`]).
+    pub fn list_acl_entries_cached(&self) -> Result<Arc<Vec<AclEntryRow>>, rusqlite::Error> {
+        if let Some(cached) = self.acl_cache.lock().unwrap().clone() {
+            return Ok(cached);
+        }
+        let entries = Arc::new(self.list_acl_entries()?);
+        *self.acl_cache.lock().unwrap() = Some(entries.clone());
+        Ok(entries)
+    }
+
+    /// Drop the ACL snapshot after any ACL-table write.
+    pub fn invalidate_acl_cache(&self) {
+        *self.acl_cache.lock().unwrap() = None;
     }
 
     pub fn list_all_acl(&self) -> Result<Vec<AclEntryRowFull>, rusqlite::Error> {
@@ -690,6 +777,239 @@ impl Database {
         )?;
         Ok(n)
     }
+
+    // ── Share links（分享）──
+
+    /// Create a share link. `expires_at` is `None` for a never-expiring link,
+    /// otherwise a `YYYY-MM-DD HH:MM:SS` local-time string comparable with
+    /// `datetime('now','localtime')`.
+    pub fn create_share_link(
+        &self,
+        token: &str,
+        real_path: &str,
+        display_path: &str,
+        name: &str,
+        is_dir: bool,
+        created_by: i64,
+        creator: &str,
+        expires_at: Option<&str>,
+    ) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO share_links
+             (token, real_path, display_path, name, is_dir, created_by, creator, expires_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                token,
+                real_path,
+                display_path,
+                name,
+                is_dir as i64,
+                created_by,
+                creator,
+                expires_at
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Look up an ACTIVE (non-expired) share link by token. Expired links are
+    /// filtered out here so every caller (page, raw serve) fails closed.
+    pub fn get_share_link(&self, token: &str) -> Result<Option<ShareLinkRow>, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT token, real_path, display_path, name, is_dir, created_by, creator, expires_at
+             FROM share_links
+             WHERE token = ?1 AND (expires_at IS NULL OR expires_at > datetime('now', 'localtime'))",
+            params![token],
+            |row| {
+                Ok(ShareLinkRow {
+                    token: row.get(0)?,
+                    real_path: row.get(1)?,
+                    display_path: row.get(2)?,
+                    name: row.get(3)?,
+                    is_dir: row.get::<_, i64>(4)? != 0,
+                    created_by: row.get(5)?,
+                    creator: row.get(6)?,
+                    expires_at: row.get(7)?,
+                })
+            },
+        )
+        .map(Some)
+        .or_else(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => Ok(None),
+            other => Err(other),
+        })
+    }
+
+    /// List share links. `only_user: Some(id)` restricts to links created by
+    /// that user (regular users); `None` lists all (admin view). EXPIRED
+    /// links are filtered out — they are invisible to receivers and only
+    /// waiting for the hourly cleanup, so managing them is noise.
+    pub fn list_share_links(
+        &self,
+        only_user: Option<i64>,
+    ) -> Result<Vec<ShareLinkRow>, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT token, real_path, display_path, name, is_dir, created_by, creator, expires_at
+             FROM share_links
+             WHERE (?1 IS NULL OR created_by = ?1)
+               AND (expires_at IS NULL OR expires_at > datetime('now', 'localtime'))
+             ORDER BY created_at DESC",
+        )?;
+        let rows = stmt
+            .query_map(params![only_user], |row| {
+                Ok(ShareLinkRow {
+                    token: row.get(0)?,
+                    real_path: row.get(1)?,
+                    display_path: row.get(2)?,
+                    name: row.get(3)?,
+                    is_dir: row.get::<_, i64>(4)? != 0,
+                    created_by: row.get(5)?,
+                    creator: row.get(6)?,
+                    expires_at: row.get(7)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Revoke a share link. Returns false when the token does not exist.
+    /// Any multi-item rows (share_items) are removed with it.
+    pub fn delete_share_link(&self, token: &str) -> Result<bool, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let n = conn.execute("DELETE FROM share_links WHERE token = ?1", params![token])?;
+        conn.execute("DELETE FROM share_items WHERE token = ?1", params![token])?;
+        Ok(n > 0)
+    }
+
+    /// Add one top-level item to a multi-item (collection) share.
+    /// `position` keeps the creator's original ordering for the landing page.
+    pub fn add_share_item(
+        &self,
+        token: &str,
+        real_path: &str,
+        display_path: &str,
+        name: &str,
+        is_dir: bool,
+        position: usize,
+    ) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT OR IGNORE INTO share_items
+             (token, real_path, display_path, name, is_dir, position)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![token, real_path, display_path, name, is_dir as i64, position as i64],
+        )?;
+        Ok(())
+    }
+
+    /// The top-level items of a collection share, in the order they were
+    /// shared. Empty for single-file/folder shares.
+    pub fn list_share_items(&self, token: &str) -> Result<Vec<ShareItemRow>, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT real_path, display_path, name, is_dir
+             FROM share_items WHERE token = ?1 ORDER BY position, name",
+        )?;
+        let rows = stmt
+            .query_map(params![token], |row| {
+                Ok(ShareItemRow {
+                    real_path: row.get(0)?,
+                    display_path: row.get(1)?,
+                    name: row.get(2)?,
+                    is_dir: row.get::<_, i64>(3)? != 0,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Remove expired share links (expired links are already invisible via
+    /// [`Database::get_share_link`]; this keeps the table small). Also removes
+    /// the collection items of expired links. There is nothing else to clean:
+    /// share visitors are virtual identities with no user/group/session/ACL
+    /// rows. Returns the number of removed link rows.
+    pub fn delete_expired_shares(&self) -> Result<usize, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        // Expired collection items first (the revoke path handles them via
+        // delete_share_link; the expiry path must too).
+        conn.execute(
+            "DELETE FROM share_items
+             WHERE token IN (
+                 SELECT token FROM share_links
+                  WHERE expires_at IS NOT NULL AND expires_at <= datetime('now', 'localtime'))",
+            [],
+        )?;
+        let n = conn.execute(
+            "DELETE FROM share_links
+             WHERE expires_at IS NOT NULL AND expires_at <= datetime('now', 'localtime')",
+            [],
+        )?;
+        drop(conn);
+        Ok(n)
+    }
+
+    /// The effective READ grants of a share link, synthesized as ACL entries.
+    ///
+    /// A share visitor is a VIRTUAL identity: no `users`/`groups_` rows, no
+    /// `acl_entries` rows, no `sessions` rows. Its permissions come entirely
+    /// from the share itself — the paths already stored in `share_links` and
+    /// `share_items` — materialized here as read-only ACL entries owned by the
+    /// synthetic [`SHARE_USER_ID`]. The synthetic ids are negative so they can
+    /// never collide with a real `acl_entries.id`. Returns an empty vec for an
+    /// unknown/expired token (fail closed), which makes the identity resolve
+    /// to a user who can access nothing.
+    pub fn get_share_acl_entries(&self, token: &str) -> Result<Vec<AclEntryRow>, rusqlite::Error> {
+        let Some(link) = self.get_share_link(token)? else {
+            return Ok(Vec::new());
+        };
+        let mut entries = Vec::new();
+        let mut id = -1i64;
+        let push = |path: String, entries: &mut Vec<AclEntryRow>, id: &mut i64| {
+            entries.push(AclEntryRow {
+                id: *id,
+                path,
+                user_id: Some(SHARE_USER_ID),
+                group_id: None,
+                permission: "read".to_string(),
+            });
+            *id -= 1;
+        };
+        if !link.real_path.is_empty() {
+            push(link.real_path, &mut entries, &mut id);
+        }
+        for item in self.list_share_items(token)? {
+            push(item.real_path, &mut entries, &mut id);
+        }
+        Ok(entries)
+    }
+}
+
+/// One share link (see the `share_links` table). `real_path` is the true
+/// filesystem path under the root; `display_path` is the path as the creating
+/// user saw it (virtual for non-admins) and is what the owner's list UI shows.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ShareLinkRow {
+    pub token: String,
+    pub real_path: String,
+    pub display_path: String,
+    pub name: String,
+    pub is_dir: bool,
+    pub created_by: i64,
+    pub creator: String,
+    /// `YYYY-MM-DD HH:MM:SS` local time; `None` = never expires.
+    pub expires_at: Option<String>,
+}
+
+/// One top-level item of a multi-item (collection) share.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ShareItemRow {
+    pub real_path: String,
+    pub display_path: String,
+    pub name: String,
+    pub is_dir: bool,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]

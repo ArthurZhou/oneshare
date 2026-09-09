@@ -8,6 +8,16 @@
 let currentPath = '';        // current directory path ('' = root)
 let currentWritable = false; // whether the current directory allows writes
 let selectedFile = null;
+let currentFilesData = null;
+let currentSort = { field: 'name', dir: 'asc' };
+
+// ── Multi-select（多选）──
+// path → { path, name, isDir } of every currently selected entry. Selection
+// is per-directory: navigating always clears it (the entries no longer exist
+// in the new listing). Toggled via the row checkboxes, Ctrl/Cmd+click, or
+// Shift+click for a range; the floating bar offers batch download/delete.
+let selectedPaths = new Map();
+let lastCheckIndex = -1; // last checkbox index, for Shift+click ranges
 
 // ── Address-bar (hash) routing ──
 // `#/public2/sub` drives navigation; the fragment is independent of the
@@ -34,6 +44,28 @@ function setHashForPath(path) {
   }
 }
 
+function setHashForFile(path) {
+  const target = '#file/' + encodeURIComponent(path);
+  if (window.location.hash !== target) {
+    suppressHash = true;
+    window.location.hash = target;
+  }
+}
+
+// Route the current hash: `#file/<path>` opens the file PAGE (the same
+// content the click used to show in a modal, now as a full page like a
+// folder view); `#/<dir>` loads the directory listing.
+function routeFromHash() {
+  const h = window.location.hash || '';
+  if (h.startsWith('#file/')) {
+    try {
+      openFileDetail({ path: decodeURIComponent(h.slice(6)) }, true);
+      return;
+    } catch (err) { /* malformed path → fall through to the listing */ }
+  }
+  loadFiles(getPathFromHash());
+}
+
 // User-driven navigation: update the address bar and load.
 function navigate(path) {
   setHashForPath(path);
@@ -45,7 +77,7 @@ window.addEventListener('hashchange', () => {
     suppressHash = false;
     return;
   }
-  loadFiles(getPathFromHash());
+  routeFromHash();
 });
 
 async function loadFiles(path) {
@@ -55,13 +87,23 @@ async function loadFiles(path) {
   // the previous directory). Context-menu selection (openContextMenuAt) does
   // not navigate, so it is unaffected.
   selectedFile = null;
+  // Multi-select is per-directory too: a fresh listing starts unselected.
+  selectedPaths.clear();
+  lastCheckIndex = -1;
   const el = document.getElementById('file-list');
   try {
     const data = await API.listFiles(currentPath);
     currentWritable = !!data.writable;
+    // Single-file share: the link IS the file — open its page directly so
+    // the receiver lands on the preview/download view.
+    if (SHARE && !currentPath && data.entries.length === 1 && !data.entries[0].is_dir) {
+      openFileDetail({ path: data.entries[0].path }, true);
+      return;
+    }
     renderFiles(data);
     updatePathNav(data);
     updateToolbar();
+    updateSelectionBar();
   } catch (e) {
     // The requested directory no longer exists (deleted, moved, or an
     // unknown/deep-link hash): fall back to the root instead of showing a
@@ -115,9 +157,60 @@ function updatePathNav(data) {
   });
 }
 
+function getSortValue(entry, field) {
+  if (field === 'size') return entry.is_dir ? 0 : Number(entry.size || 0);
+  if (field === 'mtime') {
+    const ms = new Date(entry.modified || 0).getTime();
+    return Number.isFinite(ms) ? ms : 0;
+  }
+  return (entry.name || '').toLowerCase();
+}
+
+function compareEntries(a, b, field) {
+  const dirCmp = Number(Boolean(b.is_dir)) - Number(Boolean(a.is_dir));
+  if (dirCmp !== 0) return dirCmp;
+  const av = getSortValue(a, field);
+  const bv = getSortValue(b, field);
+  if (field === 'name') {
+    return String(av).localeCompare(String(bv), undefined, { numeric: true, sensitivity: 'base' });
+  }
+  if (av < bv) return -1;
+  if (av > bv) return 1;
+  return 0;
+}
+
+function updateSortIndicators() {
+  document.querySelectorAll('.file-header-cell[data-sort]').forEach(cell => {
+    const active = cell.dataset.sort === currentSort.field;
+    const indicator = cell.querySelector('.sort-indicator');
+    if (indicator) {
+      indicator.innerHTML = active ? iconSvg(currentSort.dir === 'asc' ? 'chevron-up' : 'chevron-down') : '';
+    }
+    cell.classList.toggle('active', active);
+  });
+}
+
+function toggleSort(field) {
+  if (currentSort.field === field) {
+    currentSort.dir = currentSort.dir === 'asc' ? 'desc' : 'asc';
+  } else {
+    currentSort.field = field;
+    currentSort.dir = 'asc';
+  }
+  if (currentFilesData) {
+    renderFiles(currentFilesData);
+  }
+}
+
 function renderFiles(data) {
+  currentFilesData = data;
   const el = document.getElementById('file-list');
-  if (data.entries.length === 0) {
+  const entries = [...(data.entries || [])].sort((a, b) => {
+    const cmp = compareEntries(a, b, currentSort.field);
+    return currentSort.dir === 'asc' ? cmp : -cmp;
+  });
+
+  if (entries.length === 0) {
     el.innerHTML = data.is_share_root
       ? '<div class="empty">没有共享文件夹 — 请要求管理员为您授予访问权限</div>'
       : '<div class="empty">此文件夹为空</div>';
@@ -126,19 +219,22 @@ function renderFiles(data) {
 
   let html = `
     <div class="file-row header">
+      <div class="file-check" id="check-all" title="全选 / 取消全选">${iconSvg('square')}</div>
       <div class="file-icon"></div>
-      <div class="file-name">名称</div>
-      <div class="file-size">大小</div>
-      <div class="file-mtime">修改时间</div>
+      <div class="file-header-cell file-name" data-sort="name">名称 <span class="sort-indicator">${currentSort.field === 'name' ? iconSvg(currentSort.dir === 'asc' ? 'chevron-up' : 'chevron-down') : ''}</span></div>
+      <div class="file-header-cell file-size" data-sort="size">大小 <span class="sort-indicator">${currentSort.field === 'size' ? iconSvg(currentSort.dir === 'asc' ? 'chevron-up' : 'chevron-down') : ''}</span></div>
+      <div class="file-header-cell file-mtime" data-sort="mtime">修改时间 <span class="sort-indicator">${currentSort.field === 'mtime' ? iconSvg(currentSort.dir === 'asc' ? 'chevron-up' : 'chevron-down') : ''}</span></div>
       <div class="file-actions"></div>
     </div>`;
 
-  data.entries.forEach(entry => {
+  entries.forEach((entry, idx) => {
     const icon = entry.is_dir ? iconSvg('folder') : fileIcon(entry.name);
     const sizeStr = entry.is_dir ? '' : formatSize(entry.size);
     const cls = entry.is_dir ? 'file-row dir' : 'file-row';
+    const sel = selectedPaths.has(entry.path);
     html += `
-      <div class="${cls}" data-path="${escapeHtml(entry.path)}" data-name="${escapeHtml(entry.name)}" data-is-dir="${entry.is_dir}">
+      <div class="${cls}${sel ? ' selected' : ''}" data-path="${escapeHtml(entry.path)}" data-name="${escapeHtml(entry.name)}" data-is-dir="${entry.is_dir}" data-idx="${idx}">
+        <div class="file-check" data-check title="选择">${iconSvg(sel ? 'check-square' : 'square')}</div>
         <div class="file-icon">${icon}</div>
         <div class="file-name" title="${escapeHtml(entry.name)}">${escapeHtml(entry.name)}</div>
         <div class="file-size">${sizeStr}</div>
@@ -150,16 +246,52 @@ function renderFiles(data) {
   });
 
   el.innerHTML = html;
+  updateSortIndicators();
 
-  // Wire up click events
+  el.querySelectorAll('.file-header-cell[data-sort]').forEach(cell => {
+    cell.style.cursor = 'pointer';
+    cell.addEventListener('click', () => {
+      toggleSort(cell.dataset.sort);
+    });
+  });
+
+  // Wire up the selection checkboxes (select-all in the header, per-row
+  // checkboxes; Shift+click extends from the last touched checkbox).
+  const checkAll = document.getElementById('check-all');
+  if (checkAll) checkAll.addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleSelectAll();
+  });
+  el.querySelectorAll('[data-check]').forEach(c => {
+    c.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const row = c.closest('.file-row');
+      const idx = parseInt(row.dataset.idx, 10);
+      if (e.shiftKey && lastCheckIndex >= 0) {
+        selectRange(lastCheckIndex, idx);
+      } else {
+        toggleRowSelection(row);
+      }
+      lastCheckIndex = idx;
+    });
+  });
+
+  // Wire up click events. Ctrl/Cmd+click toggles multi-selection instead of
+  // opening/navigating; plain clicks keep their original behavior.
   el.querySelectorAll('.file-row.dir').forEach(row => {
-    row.addEventListener('click', () => navigate(row.dataset.path));
+    row.addEventListener('click', (e) => {
+      if (rowClickSelect(row, e)) return;
+      navigate(row.dataset.path);
+    });
   });
 
   // Clicking a file opens its detail view (inline preview for images /
   // media / text, online editing for writable text files).
   el.querySelectorAll('.file-row:not(.dir):not(.header)').forEach(row => {
-    row.addEventListener('click', () => openFileDetail({ path: row.dataset.path, name: row.dataset.name }));
+    row.addEventListener('click', (e) => {
+      if (rowClickSelect(row, e)) return;
+      openFileDetail({ path: row.dataset.path, name: row.dataset.name });
+    });
   });
 
   // Wire up download buttons (files download directly, folders download as a tree/ZIP)
@@ -194,7 +326,7 @@ function renderFiles(data) {
     row.addEventListener('pointerdown', (e) => {
       if (e.pointerType !== 'mouse') return;         // touch/pen use the long-press menu
       if (e.button !== 0) return;                    // left button only
-      if (e.target.closest('[data-action]')) return; // not from action buttons
+      if (e.target.closest('[data-action], .file-check')) return; // not from action buttons/checkbox
       armDragHold(row, e);
     });
     row.addEventListener('dragstart', (e) => {
@@ -207,11 +339,19 @@ function renderFiles(data) {
           e.dataTransfer.setData('text/plain', row.dataset.name);
         } catch (err) { /* some browsers restrict setData during dragstart */ }
       }
-      row.classList.add('dragging');
+      // Multi-select aware: dragging one row of a multi-selection moves ALL
+      // selected entries — give them the dragging visual too.
+      if (selectedPaths.has(dragSource.path)) {
+        document.querySelectorAll('#file-list .file-row').forEach(r => {
+          if (selectedPaths.has(r.dataset.path)) r.classList.add('dragging');
+        });
+      } else {
+        row.classList.add('dragging');
+      }
     });
     row.addEventListener('dragend', () => {
       dragSource = null;
-      row.classList.remove('dragging');
+      document.querySelectorAll('#file-list .file-row.dragging').forEach(r => r.classList.remove('dragging'));
       row.removeAttribute('draggable');
       cancelDragHold();
       clearDropTargets();
@@ -223,6 +363,198 @@ function renderFiles(data) {
 function openContextMenuAt(x, y, row) {
   selectedFile = { path: row.dataset.path, name: row.dataset.name, isDir: row.dataset.isDir === 'true' };
   showContextMenu(x, y, selectedFile);
+}
+
+// ── Multi-select helpers ──
+
+// Ctrl/Cmd+click on a row toggles its selection instead of opening it.
+// Returns true when the click was consumed as a selection toggle.
+function rowClickSelect(row, e) {
+  if (!(e.ctrlKey || e.metaKey)) return false;
+  toggleRowSelection(row);
+  lastCheckIndex = parseInt(row.dataset.idx, 10);
+  return true;
+}
+
+function toggleRowSelection(row) {
+  const path = row.dataset.path;
+  if (selectedPaths.has(path)) {
+    selectedPaths.delete(path);
+  } else {
+    selectedPaths.set(path, {
+      path,
+      name: row.dataset.name,
+      isDir: row.dataset.isDir === 'true',
+    });
+  }
+  renderSelectionState();
+  updateSelectionBar();
+}
+
+// Select every entry between two row indexes (Shift+click range).
+function selectRange(a, b) {
+  const rows = [...document.querySelectorAll('#file-list .file-row:not(.header)')];
+  const lo = Math.min(a, b), hi = Math.max(a, b);
+  rows.forEach(row => {
+    const idx = parseInt(row.dataset.idx, 10);
+    if (idx < lo || idx > hi) return;
+    if (!selectedPaths.has(row.dataset.path)) {
+      selectedPaths.set(row.dataset.path, {
+        path: row.dataset.path,
+        name: row.dataset.name,
+        isDir: row.dataset.isDir === 'true',
+      });
+    }
+  });
+  renderSelectionState();
+  updateSelectionBar();
+}
+
+function toggleSelectAll() {
+  const rows = [...document.querySelectorAll('#file-list .file-row:not(.header)')];
+  const allSelected = rows.length > 0 && rows.every(r => selectedPaths.has(r.dataset.path));
+  rows.forEach(row => {
+    if (allSelected) {
+      selectedPaths.delete(row.dataset.path);
+    } else if (!selectedPaths.has(row.dataset.path)) {
+      selectedPaths.set(row.dataset.path, {
+        path: row.dataset.path,
+        name: row.dataset.name,
+        isDir: row.dataset.isDir === 'true',
+      });
+    }
+  });
+  renderSelectionState();
+  updateSelectionBar();
+}
+
+function clearSelection() {
+  selectedPaths.clear();
+  renderSelectionState();
+  updateSelectionBar();
+}
+
+// Sync every row's checkbox/selected styling with selectedPaths.
+function renderSelectionState() {
+  document.querySelectorAll('#file-list .file-row:not(.header)').forEach(row => {
+    const sel = selectedPaths.has(row.dataset.path);
+    row.classList.toggle('selected', sel);
+    const c = row.querySelector('.file-check');
+    if (c) c.innerHTML = iconSvg(sel ? 'check-square' : 'square');
+  });
+  const rows = document.querySelectorAll('#file-list .file-row:not(.header)');
+  const all = rows.length > 0 && [...rows].every(r => selectedPaths.has(r.dataset.path));
+  const ca = document.getElementById('check-all');
+  if (ca) ca.innerHTML = iconSvg(all ? 'check-square' : 'square');
+}
+
+// Show/hide the floating batch-action bar.
+function updateSelectionBar() {
+  const bar = document.getElementById('selection-bar');
+  if (!bar) return;
+  if (selectedPaths.size === 0) {
+    bar.style.display = 'none';
+    return;
+  }
+  bar.style.display = 'flex';
+  const count = document.getElementById('selection-count');
+  if (count) count.textContent = `已选择 ${selectedPaths.size} 项`;
+}
+
+// Batch-download every selected entry as ONE transfer task: transfers run
+// sequentially with combined progress, and on FS-API browsers the destination
+// directory is picked ONCE for the whole batch (libfw.setBatchReuse) instead
+// of one picker per item.
+async function downloadSelected() {
+  const items = [...selectedPaths.values()];
+  if (!items.length) return;
+  if (items.length === 1) {
+    // Single selection keeps the plain single-task semantics.
+    const it = items[0];
+    if (it.isDir) downloadFolder(it.path, it.name);
+    else downloadFile(it.path, it.name);
+    return;
+  }
+  const t = { kind: 'download', name: `${items.length} 项`, total: 0, done: 0, status: 'active', error: null };
+  addTransfer(t);
+  t.run = () => runBatchDownloadTask(t, items);
+  t.run();
+}
+
+async function runBatchDownloadTask(t, items) {
+  t.status = 'active';
+  t.error = null;
+  t.finalizing = false;
+  renderTransfers();
+  // Known total starts at the sum of the file sizes; folder totals only
+  // become known when their own progress events start flowing, and are added
+  // to the running total then.
+  let knownTotal = items.reduce((s, i) => s + (i.isDir ? 0 : (i.size || 0)), 0);
+  let completed = 0; // bytes finished by earlier items
+  try {
+    Libfw.setBatchReuse(true);
+    for (const it of items) {
+      let curDone = 0;
+      let dirTotalAdded = false;
+      // One read token per item (the paths differ); cheap — no prompts.
+      const tokenResp = await API.getToken(it.path, 'read');
+      const onEvent = (ev) => {
+        if (ev.type !== 'progress') return;
+        curDone = ev.done || 0;
+        if (it.isDir && !dirTotalAdded && ev.total > 0) {
+          dirTotalAdded = true;
+          knownTotal += ev.total;
+        }
+        updateTransfer(t.id, { done: completed + curDone, total: knownTotal });
+      };
+      const run = it.isDir
+        ? Libfw.downloadFolder(tokenResp.token, tokenResp.path, onEvent, (id) => { t.engineId = id; })
+        : Libfw.downloadFile(tokenResp.token, tokenResp.path, it.name, onEvent, (id) => { t.engineId = id; });
+      await run;
+      completed += curDone;
+      updateTransfer(t.id, { done: completed, total: knownTotal });
+    }
+    updateTransfer(t.id, { status: 'done', done: knownTotal, total: knownTotal, finalizing: false });
+    setTimeout(() => removeTransfer(t.id), 3000);
+  } catch (e) {
+    const cancelled = e && (e.code === 'cancelled' || e.code === 'abort' || e.name === 'AbortError');
+    updateTransfer(t.id, {
+      status: cancelled ? 'cancelled' : 'error',
+      done: completed,
+      total: knownTotal,
+      error: cancelled ? '' : (e && e.message) || String(e),
+      finalizing: false,
+    });
+  } finally {
+    Libfw.setBatchReuse(false);
+  }
+}
+
+// Batch-delete every selected entry after an explicit confirmation.
+function deleteSelected() {
+  const items = [...selectedPaths.values()];
+  if (!items.length) return;
+  const preview = items.slice(0, 8).map(i => escapeHtml(i.name)).join('、')
+    + (items.length > 8 ? ` 等 ${items.length} 项` : '');
+  const hasDir = items.some(i => i.isDir);
+  showModal('批量删除', `
+    <p>确定要删除选中的 ${items.length} 项吗？</p>
+    <p style="font-size:0.9em;color:var(--muted);word-break:break-all">${preview}</p>
+    ${hasDir ? '<p style="color:var(--error);font-size:0.85em">选中的文件夹及其全部内容都将被删除！</p>' : ''}
+  `, async () => {
+    let failed = 0;
+    for (const it of items) {
+      try {
+        await API.deleteFile(it.path);
+      } catch (e) {
+        failed++;
+      }
+    }
+    clearSelection();
+    hideModal();
+    loadFiles(currentPath);
+    if (failed) alert(`${failed} 项删除失败`);
+  }, { okText: '删除' });
 }
 
 function showContextMenu(x, y, file) {
@@ -285,9 +617,10 @@ function attachRowTouch(row) {
   };
 
   row.addEventListener('touchstart', (e) => {
-    // Don't hijack taps on the row's action buttons (they have their own
-    // click handlers and are meant to be tapped, not long-pressed).
-    if (e.target.closest('[data-action]')) return;
+    // Don't hijack taps on the row's action buttons or the selection checkbox
+    // (they have their own click handlers and are meant to be tapped, not
+    // long-pressed).
+    if (e.target.closest('[data-action], .file-check')) return;
     const t = e.touches[0];
     if (!t) return;
     cleanup();
@@ -379,11 +712,11 @@ async function handleContextAction(action, file) {
       if (file.isDir) await downloadFolder(file.path, file.name);
       else await downloadFile(file.path, file.name);
       break;
+    case 'share':
+      showShareModal([file]);
+      break;
     case 'rename':
       showRenameModal(file);
-      break;
-    case 'move':
-      showMoveModal(file);
       break;
     case 'delete':
       showDeleteConfirm(file);
@@ -1053,18 +1386,35 @@ function isInternalMove(e) {
   return true;
 }
 
-// Whether `destDir` is a legal move destination for the current drag:
-// - moving to the same location is a no-op → rejected;
-// - a folder cannot be moved into itself or any of its own subfolders.
+// The entries carried by the current drag: the dragged row itself, or —
+// when it belongs to the active multi-selection — EVERY selected entry.
+function draggedItems() {
+  if (!dragSource) return [];
+  if (selectedPaths.has(dragSource.path) && selectedPaths.size > 1) {
+    return [...selectedPaths.values()];
+  }
+  return [dragSource];
+}
+
+// Which of the dragged items may legally move into `destDir`: not a no-op
+// (same location), and a folder never into itself or its own subfolder.
+// Invalid ones are skipped at drop time instead of blocking the whole move.
+function movableItems(destDir) {
+  return draggedItems().filter(it => {
+    const destPath = (destDir ? destDir + '/' : '') + it.name;
+    if (destPath === it.path) return false;
+    if (it.isDir) {
+      if (it.path === destDir) return false;
+      if (destDir.startsWith(it.path + '/')) return false;
+    }
+    return true;
+  });
+}
+
+// Whether `destDir` accepts the current drag (at least one movable item).
 function isValidDropTargetDir(destDir) {
   if (!dragSource) return false;
-  const destPath = (destDir ? destDir + '/' : '') + dragSource.name;
-  if (destPath === dragSource.path) return false;
-  if (dragSource.isDir) {
-    if (dragSource.path === destDir) return false;
-    if (destDir.startsWith(dragSource.path + '/')) return false;
-  }
-  return true;
+  return movableItems(destDir).length > 0;
 }
 
 function clearDropTargets() {
@@ -1094,7 +1444,10 @@ function dropTargetFromPoint(x, y) {
       return { kind: 'dir', path: dest, el: navLink };
     }
   }
-  if (isValidDropTargetDir(currentPath)) {
+  // The list background is a valid drop area for the current directory even
+  // when the destination is effectively a no-op (same directory): it should
+  // accept the release and simply do nothing instead of rejecting the drop.
+  if (currentPath !== null && currentPath !== undefined) {
     return { kind: 'current', path: currentPath, el: null };
   }
   return { kind: 'none' };
@@ -1223,42 +1576,98 @@ function setupMoveDragDrop() {
 }
 
 async function performMove(destDir) {
-  const src = dragSource;
-  dragSource = null;
-  if (!src) return;
-  const destPath = (destDir ? destDir + '/' : '') + src.name;
-  // Dropped back where it already lives: nothing to do.
-  if (destPath === src.path) return;
-  try {
-    await API.moveFile(src.path, destPath);
-    loadFiles(currentPath);
-  } catch (e) {
-    alert('Move failed: ' + e.message);
+  // Dropping on the blank area of the current directory is a valid release
+  // target, but it is a no-op for the same folder. Ignore it cleanly instead
+  // of issuing a useless move request or failing the drag interaction.
+  if (destDir === currentPath) {
+    dragSource = null;
+    clearDropTargets();
+    clearAutoEnter();
+    return;
   }
+  const items = movableItems(destDir);
+  dragSource = null;
+  if (!items.length) return;
+  let failed = 0;
+  for (const it of items) {
+    const destPath = (destDir ? destDir + '/' : '') + it.name;
+    try {
+      await API.moveFile(it.path, destPath);
+    } catch (e) {
+      failed++;
+    }
+  }
+  // Whatever moved out of this directory is gone from the listing; the
+  // selection no longer matches the fresh listing either.
+  clearSelection();
+  loadFiles(currentPath);
+  if (failed) alert(`${failed} 项移动失败`);
 }
 
-// ── File detail view (click a file row) ──
+// ── File page view (clicking a file opens a PAGE, like entering a folder) ──
 //
-// A wide modal showing metadata plus an inline preview: images/video/audio
-// stream from `/api/files/raw` (session-cookie auth); small text files load
-// their content from `/api/files/content` and can be edited online when the
-// user holds write permission. Real paths never appear here — the display
-// path is resolved server-side, exactly like every other file operation.
+// Clicking a file renders metadata + inline preview + actions into the MAIN
+// area — never a modal — with the breadcrumb treating the file as the leaf
+// and a 返回 button back to the listing. Images/video/audio stream from the
+// raw endpoint (session-cookie auth in normal mode, the share token in share
+// mode); small text files load their content and can be edited online when
+// the user holds write permission. Real paths never appear here — the
+// display path is resolved server-side, exactly like every other operation.
+// The view is addressable via `#file/<encoded path>`, so browser back/forward
+// and deep links work exactly like directory navigation.
 
-async function openFileDetail(file) {
-  showModal(file.name, '<div class="file-detail-empty">加载中...</div>', null, {
-    wide: true,
-    hideFooter: true,
-  });
+async function openFileDetail(file, fromHash = false) {
+  const path = file.path;
+  if (!fromHash) setHashForFile(path);
+  // The listing context becomes the file's parent directory: 返回 reloads it.
+  currentPath = path.split('/').slice(0, -1).join('/');
+  // Any multi-selection belonged to the listing we just left.
+  clearSelection();
+  const el = document.getElementById('file-list');
+  el.innerHTML = '<div class="loading">加载中...</div>';
+  updateFileNav(path);
   let detail;
   try {
-    detail = await API.getFileDetail(file.path);
+    detail = await API.getFileDetail(path);
   } catch (e) {
-    document.getElementById('modal-body').innerHTML =
-      `<div class="file-detail-empty">${iconSvg('alert-circle')} 加载失败: ${escapeHtml(e.message)}</div>`;
+    el.innerHTML = `
+      <div class="file-view">
+        <div class="file-view-head">
+          <button class="btn btn-sm" id="fv-back">${iconSvg('corner-up-left')} 返回</button>
+          <span class="file-view-title">${iconSvg('alert-circle')} 加载失败</span>
+        </div>
+        <div class="file-detail-empty">${iconSvg('alert-circle')} ${escapeHtml(e.message)}</div>
+      </div>`;
+    const back = document.getElementById('fv-back');
+    if (back) back.onclick = () => navigate(currentPath);
     return;
   }
   renderFileDetail(detail);
+}
+
+// Breadcrumb for the file page: ancestor directories link back into the
+// listing; the file itself is the (non-link) leaf.
+function updateFileNav(path) {
+  const nav = document.getElementById('path-nav');
+  const parts = path.split('/').filter(Boolean);
+  let html = '<a href="#" data-path="">' + iconSvg('home') + ' 主页</a>';
+  if (parts.length > 0) html += '<span class="sep">/</span>';
+  let cumulative = '';
+  parts.forEach((p, i) => {
+    cumulative += (i > 0 ? '/' : '') + p;
+    if (i === parts.length - 1) {
+      html += `<span class="cur">${escapeHtml(p)}</span>`;
+    } else {
+      html += `<a href="#" data-path="${escapeHtml(cumulative)}">${escapeHtml(p)}</a><span class="sep">/</span>`;
+    }
+  });
+  nav.innerHTML = html;
+  nav.querySelectorAll('a').forEach(a => {
+    a.addEventListener('click', (e) => {
+      e.preventDefault();
+      navigate(a.dataset.path);
+    });
+  });
 }
 
 function previewHtmlFor(detail) {
@@ -1287,6 +1696,7 @@ function previewHtmlFor(detail) {
 }
 
 function renderFileDetail(detail) {
+  const el = document.getElementById('file-list');
   const meta = `
     <div class="file-detail-meta">
       <div class="meta-row"><span class="meta-label">大小</span><span>${formatSize(detail.size)}</span></div>
@@ -1299,13 +1709,24 @@ function renderFileDetail(detail) {
   const actions = `
     <div class="file-detail-actions">
       <button class="btn" id="detail-download">${iconSvg('download')} 下载</button>
+      ${SHARE ? '' : `<button class="btn" id="detail-share">${iconSvg('share-2')} 分享</button>`}
       ${editable ? `<button class="btn btn-primary" id="detail-edit">${iconSvg('pen-tool')} 在线编辑</button>` : ''}
     </div>`;
 
-  document.getElementById('modal-body').innerHTML =
-    `<div class="file-detail">${meta}<div class="file-detail-preview">${previewHtmlFor(detail)}</div>${actions}</div>`;
+  el.innerHTML = `
+    <div class="file-view">
+      <div class="file-view-head">
+        <button class="btn btn-sm" id="fv-back">${iconSvg('corner-up-left')} 返回</button>
+        <span class="file-view-title">${fileIcon(detail.name)} ${escapeHtml(detail.name)}</span>
+      </div>
+      <div class="file-detail">${meta}<div class="file-detail-preview">${previewHtmlFor(detail)}</div>${actions}</div>
+    </div>`;
 
+  document.getElementById('fv-back').onclick = () => navigate(currentPath);
   document.getElementById('detail-download').onclick = () => downloadFile(detail.path, detail.name);
+  const shareBtn = document.getElementById('detail-share');
+  if (shareBtn) shareBtn.onclick = () =>
+    showShareModal([{ path: detail.path, name: detail.name, isDir: false }]);
   const editBtn = document.getElementById('detail-edit');
   if (editBtn) editBtn.onclick = () => enterTextEditMode(detail);
 }
@@ -1313,7 +1734,7 @@ function renderFileDetail(detail) {
 // Swap the preview for a textarea. `detail.content` is kept in sync so
 // Cancel simply re-renders the (unmodified) preview, and Ctrl+S saves.
 function enterTextEditMode(detail) {
-  const container = document.querySelector('#modal-body .file-detail-preview');
+  const container = document.querySelector('.file-view .file-detail-preview');
   if (!container) return;
   container.innerHTML = `
     <textarea id="text-editor" class="text-editor" spellcheck="false" wrap="off"></textarea>
@@ -1351,14 +1772,178 @@ function enterTextEditMode(detail) {
     try {
       await API.saveFileContent(detail.path, ta.value);
       detail.content = ta.value;
-      // Size/mtime may have changed — refresh the listing in the background.
-      loadFiles(currentPath);
+      // Re-render the file page (the listing refreshes when the user goes
+      // back — loadFiles would replace this page with the listing).
       renderFileDetail(detail);
     } catch (e) {
       btn.disabled = false;
       btn.textContent = '保存';
       alert('保存失败: ' + e.message);
     }
+  }
+}
+
+// ── Share links（分享）──
+//
+// Creates a temporary, no-login link (`/s/{token}`) for file(s)/folder(s)
+// the user can read. One item shares that file/folder directly; several
+// items create a "virtual root" collection whose landing page lists them.
+// The server stores the token → path mapping, so real paths never appear in
+// the URL; receivers need no account until the link expires.
+function showShareModal(items) {
+  if (!currentUser) { alert('请先登录'); return; }
+  const arr = Array.isArray(items) ? items : [items];
+  if (!arr.length) return;
+  const multi = arr.length > 1;
+  const title = multi ? `分享 ${arr.length} 项` : `分享 "${arr[0].name}"`;
+
+  // Mint a share link with the TTL currently chosen in the modal and reveal
+  // the copyable URL. Reused by the OK button (首次) and the "重新生成"
+  // button afterwards.
+  async function generateShareLink() {
+    const ttl = parseInt(document.getElementById('share-ttl').value, 10) || 0;
+    const okBtn = document.getElementById('modal-ok');
+    okBtn.disabled = true;
+    try {
+      const resp = await API.createShare(arr.map(i => i.path), ttl);
+      // ONESHARE_BASE is the CANONICAL app prefix (api.js rewrites it to the
+      // share-prefixed base when running inside a share URL — sharing from a
+      // share page would otherwise build /s/<old>/s/<new>).
+      const url = `${location.origin}${ONESHARE_BASE}/s/${resp.token}`;
+      const result = document.getElementById('share-result');
+      if (result) {
+        result.style.display = 'flex';
+        const input = document.getElementById('share-url');
+        input.value = url;
+        document.getElementById('share-copy').onclick = (e) => copyText(url, e.currentTarget);
+        input.focus();
+        input.select();
+      }
+      okBtn.disabled = false;
+    } catch (e) {
+      okBtn.disabled = false;
+      alert('创建分享链接失败: ' + e.message);
+    }
+  }
+
+  const note = multi
+    ? `<p class="share-note">将创建一个包含 ${arr.length} 个项目的分享页面：接收者无需登录即可浏览并下载其中的文件。</p>`
+    : arr[0].isDir
+      ? '<p class="share-note">将分享整个文件夹：接收者无需登录即可浏览并下载其中的文件。</p>'
+      : '<p class="share-note">生成的链接无需登录即可访问。</p>';
+
+  showModal(title, `
+    <div class="share-form">
+      <label>有效期:
+        <select id="share-ttl">
+          <option value="3600">1 小时</option>
+          <option value="86400">1 天</option>
+          <option value="604800" selected>7 天</option>
+          <option value="2592000">30 天</option>
+          <option value="0">永久有效</option>
+        </select>
+      </label>
+      ${note}
+      <div id="share-result" class="share-result" style="display:none">
+        <input type="text" id="share-url" readonly>
+        <button class="btn btn-sm" id="share-copy" title="复制链接">${iconSvg('copy')} 复制</button>
+      </div>
+    </div>
+  `, async () => {
+    await generateShareLink();
+    // showModal re-arms the OK handler automatically; only the label changes.
+    document.getElementById('modal-ok').textContent = '重新生成';
+  }, { okText: '生成链接' });
+}
+
+// ── Share management（我的分享）──
+// Regular users see and revoke their OWN links; admins see everyone's (the
+// server filters, the creator column disambiguates).
+async function showSharesModal() {
+  if (!currentUser) { alert('请先登录'); return; }
+  showModal(currentUser.is_admin ? '分享管理（全部用户）' : '我的分享',
+    '<div class="shares-empty">加载中...</div>', null, { wide: true, hideFooter: true });
+
+  let shares;
+  try {
+    shares = await API.listShares();
+  } catch (e) {
+    document.getElementById('modal-body').innerHTML =
+      `<div class="shares-empty">${iconSvg('alert-circle')} 加载失败: ${escapeHtml(e.message)}</div>`;
+    return;
+  }
+
+  const body = document.getElementById('modal-body');
+  if (!shares.length) {
+    body.innerHTML = '<div class="shares-empty">还没有创建任何分享链接</div>';
+    return;
+  }
+
+  body.innerHTML = `
+    <div class="shares-list">
+      ${shares.map(s => {
+        const url = `${location.origin}${API.base}/s/${s.token}`;
+        const content = s.items && s.items.length
+          ? `${escapeHtml(s.name)} · ${s.items.map(i => escapeHtml(i.name) + (i.isDir ? '/' : '')).join('、')}`
+          : `${s.is_dir ? iconSvg('folder') : fileIcon(s.name)} ${escapeHtml(s.name)}`;
+        const expires = s.expires_at ? `至 ${escapeHtml(s.expires_at)}` : '永久有效';
+        return `
+        <div class="share-row" data-token="${escapeHtml(s.token)}">
+          <div class="share-main">
+            <div class="share-name" title="${escapeHtml(content)}">${content}</div>
+            <div class="share-meta">
+              ${currentUser.is_admin ? `<span>${iconSvg('user')} ${escapeHtml(s.creator)}</span>` : ''}
+              <span>${expires}</span>
+              <a href="${API.base}/s/${escapeHtml(s.token)}" target="_blank" rel="noopener">${escapeHtml('/s/' + s.token.slice(0, 12))}…</a>
+            </div>
+          </div>
+          <div class="share-actions">
+            <button class="btn btn-sm" data-share-copy title="复制链接">${iconSvg('copy')}</button>
+            <button class="btn btn-sm" data-share-open title="打开" onclick="window.open('${API.base}/s/${escapeHtml(s.token)}', '_blank')">${iconSvg('globe')}</button>
+            <button class="btn btn-sm btn-danger" data-share-revoke title="撤销分享">${iconSvg('trash-2')}</button>
+          </div>
+        </div>`;
+      }).join('')}
+    </div>`;
+
+  body.querySelectorAll('[data-share-copy]').forEach(btn => {
+    btn.onclick = () => {
+      const row = btn.closest('.share-row');
+      const s = shares.find(x => x.token === row.dataset.token);
+      if (s) copyText(`${location.origin}${API.base}/s/${s.token}`, btn);
+    };
+  });
+  body.querySelectorAll('[data-share-revoke]').forEach(btn => {
+    btn.onclick = async () => {
+      btn.disabled = true;
+      try {
+        await API.revokeShare(btn.closest('.share-row').dataset.token);
+        btn.closest('.share-row').remove();
+        if (!body.querySelector('.share-row')) {
+          body.innerHTML = '<div class="shares-empty">还没有创建任何分享链接</div>';
+        }
+      } catch (e) {
+        btn.disabled = false;
+        alert('撤销失败: ' + e.message);
+      }
+    };
+  });
+}
+
+// Clipboard write with execCommand fallback (http deployments, permissions).
+async function copyText(text, btn) {
+  let ok = false;
+  try {
+    await navigator.clipboard.writeText(text);
+    ok = true;
+  } catch (e) {
+    const input = document.getElementById('share-url');
+    if (input) { input.value = text; input.focus(); input.select(); ok = document.execCommand('copy'); }
+  }
+  if (btn) {
+    const old = btn.innerHTML;
+    btn.innerHTML = ok ? iconSvg('check') : iconSvg('x');
+    setTimeout(() => { btn.innerHTML = old; }, 1500);
   }
 }
 
@@ -1380,27 +1965,35 @@ function showModal(title, bodyHtml, onOk, opts = {}) {
   const cancelBtn = document.getElementById('modal-cancel');
   const closeBtn = document.getElementById('modal-close');
   if (opts.okText) okBtn.textContent = opts.okText;
+  // A previous dialog may have been dismissed while its OK handler was
+  // running (share generation, batch delete…); never open a new one with a
+  // dead OK button.
+  okBtn.disabled = false;
 
-  const cleanup = () => {
+  // Cancel/Close stay wired for the modal's ENTIRE lifetime: an async OK
+  // handler must never trap the user in the dialog (they used to be unbound
+  // the moment OK was clicked, leaving only the overlay to click).
+  cancelBtn.onclick = () => hideModal();
+  closeBtn.onclick = () => hideModal();
+
+  // OK handler: no concurrent re-entry (double-click can't run a destructive
+  // action twice), and re-armed after a FAILED handler (bad name, network
+  // error) so the action can simply be retried. If the handler closes the
+  // dialog, the button stays dead — the modal is gone anyway.
+  const runOk = async () => {
     okBtn.onclick = null;
-    cancelBtn.onclick = null;
-    closeBtn.onclick = null;
+    okBtn.disabled = true;
+    try {
+      if (onOk) await onOk();
+    } finally {
+      const overlay = document.getElementById('modal-overlay');
+      if (overlay && overlay.style.display !== 'none') {
+        okBtn.disabled = false;
+        okBtn.onclick = runOk;
+      }
+    }
   };
-
-  okBtn.onclick = () => {
-    cleanup();
-    if (onOk) onOk();
-  };
-
-  cancelBtn.onclick = () => {
-    cleanup();
-    hideModal();
-  };
-
-  closeBtn.onclick = () => {
-    cleanup();
-    hideModal();
-  };
+  okBtn.onclick = runOk;
 
   // Focus input if present
   const input = document.getElementById('modal-body').querySelector('input');
@@ -1415,6 +2008,7 @@ function hideModal() {
   if (okBtn) {
     okBtn.textContent = '确定';
     okBtn.classList.remove('btn-danger');
+    okBtn.disabled = false;
   }
   // Reset wide/footer overrides from the previous dialog.
   const modal = document.getElementById('modal');
@@ -1424,6 +2018,38 @@ function hideModal() {
 }
 
 // ── Utilities ──
+
+// ── Share mode UI adjustments ──
+// A share visitor IS a temporary read-only user (the backend's ShareProxy
+// swaps the URL token for their session), so the server already rejects any
+// write; here we merely hide the controls that can never succeed, while the
+// listing, breadcrumb, file pages, previews and libfw downloads run through
+// the exact same code as the normal app.
+function applyShareMode() {
+  if (!SHARE) return;
+  ['btn-upload', 'btn-upload-folder', 'btn-mkdir', 'btn-my-shares', 'btn-admin'].forEach(id => {
+    const b = document.getElementById(id);
+    if (b) b.style.display = 'none';
+  });
+  // Context menu: receivers can only download.
+  document.querySelectorAll('#ctx-menu .ctx-item').forEach(item => {
+    if (item.dataset.action !== 'download') item.style.display = 'none';
+  });
+  // Selection bar: batch download stays; share/delete need a real account.
+  ['sel-share', 'sel-delete'].forEach(id => {
+    const b = document.getElementById(id);
+    if (b) b.style.display = 'none';
+  });
+}
+
+// In share mode the tab title carries the share name (the temporary
+// identity's display name); the user-info slot is rendered by auth.js from
+// that identity's session (updateUserUI).
+function applyShareHeader() {
+  if (!SHARE) return;
+  const name = currentUser && currentUser.display_name;
+  document.title = name ? `共享 - ${name}` : 'OneShare - 共享';
+}
 
 function formatSize(bytes) {
   if (bytes === 0) return '0 B';

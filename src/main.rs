@@ -16,6 +16,7 @@ use crate::libtoken::{CodecPathValidator, OneshareTokenVerifier};
 use axum::{
     body::Body,
     http::{HeaderValue, Request, Response, StatusCode, Uri},
+    response::IntoResponse,
     routing::{any_service, delete, get, post, put},
     Router,
 };
@@ -100,6 +101,147 @@ where
         // Fresh extensions drop the outer router's captured path params.
         parts.extensions = axum::http::Extensions::new();
         self.inner.call(axum::http::Request::from_parts(parts, body))
+    }
+}
+
+/// Middleware for `/s/{token}/{*path}`: a share URL IS a temporary session.
+///
+/// Every request a share visitor makes is prefixed with `/s/{token}/`. This
+/// service resolves the share, gets (or self-heals) the temporary identity's
+/// standard session, **swaps the URL token for that session cookie**, and
+/// rewrites the request onto the normal routes (`/api/…`, `/file/…`,
+/// `/dir/…`, static assets). Downstream there is ZERO share-specific
+/// authorization: the visitor is simply a temporary, read-only user flowing
+/// through the unmodified session → user → ACL → virtual-share-root
+/// pipeline, which is what makes libfw transfers work untouched.
+#[derive(Clone)]
+struct ShareProxy {
+    inner: Router,
+    db: Arc<Database>,
+}
+
+impl ShareProxy {
+    fn new(inner: Router, db: Arc<Database>) -> Self {
+        Self { inner, db }
+    }
+}
+
+impl Service<Request<Body>> for ShareProxy {
+    type Response = Response<Body>;
+    type Error = Infallible;
+    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
+
+    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        // Fully qualified: axum's Router implements Service for several body
+        // types, so the method call alone is ambiguous here.
+        <Router as Service<Request<Body>>>::poll_ready(&mut self.inner, cx)
+    }
+
+    fn call(&mut self, req: Request<Body>) -> Self::Future {
+        let db = self.db.clone();
+        let mut inner = self.inner.clone();
+        Box::pin(async move {
+            // Path shape: /s/{token}/{rest…} (base_url already stripped).
+            let path = req.uri().path().to_string();
+            let mut segs = path.splitn(4, '/');
+            let _root = segs.next(); // ""
+            let s = segs.next().unwrap_or("");
+            let token = segs.next().unwrap_or("");
+            let rest = segs.next().unwrap_or("");
+            if s != "s" || token.is_empty() {
+                return Ok((StatusCode::NOT_FOUND, "Not found").into_response());
+            }
+
+            // Route allowlist: a share visitor is a READ-ONLY identity, so the
+            // proxy only forwards the read-only file APIs, libfw transfers and
+            // the app shell assets. Everything else (auth flows, admin
+            // routes, share management, uploads/mkdir/delete) never reaches
+            // the core router under a share URL — even though ACLs and the
+            // admin checks would also reject them, keeping them out of the
+            // proxy removes login/logout and context-confusion side effects.
+            let first = rest.split('/').next().unwrap_or("");
+            let allowed = match first {
+                "api" => matches!(
+                    rest.strip_prefix("api/").unwrap_or(""),
+                    "me"
+                        | "files/list"
+                        | "files/token"
+                        | "files/names"
+                        | "files/raw"
+                        | "files/content"
+                ),
+                "file" | "dir" | "capabilities" | "config.js" | "js" | "css" | "vendor" => true,
+                _ => false,
+            };
+            if !allowed {
+                return Ok((StatusCode::NOT_FOUND, "Not available on a share link").into_response());
+            }
+
+            let Some(_) = db.get_share_link(token).ok().flatten() else {
+                return Ok((
+                    StatusCode::NOT_FOUND,
+                    "Share not found or expired",
+                )
+                    .into_response());
+            };
+
+            // The share session is VIRTUAL: the injected cookie value is
+            // `share:<token>` and no session row is ever created.
+            // `get_user_from_cookie` resolves it against `share_links` on
+            // every request, so expiry/revocation take effect immediately and
+            // nothing is written to the users/groups/sessions tables — the
+            // share token in the URL is the one and only credential.
+            let session_id = format!(
+                "{}{}",
+                crate::auth::session::SHARE_COOKIE_PREFIX,
+                token
+            );
+
+            // Rewrite `/s/{token}/{rest}` → `/{rest}` (query string kept for
+            // the `?v=` cache busters), and drop the outer router's captured
+            // path params so the inner router does its own matching (same
+            // reason FreshPathParams exists for the libfw routes).
+            let (mut parts, body) = req.into_parts();
+            let pq = match parts.uri.query() {
+                Some(q) if !rest.is_empty() => format!("/{}?{}", rest, q),
+                Some(q) => format!("/?{}", q),
+                None if !rest.is_empty() => format!("/{}", rest),
+                None => "/".to_string(),
+            };
+            if let Ok(uri) = Uri::builder().path_and_query(pq).build() {
+                parts.uri = uri;
+            }
+            parts.extensions = axum::http::Extensions::new();
+
+            // Swap the session cookie: drop any incoming session (the
+            // visitor's own identity — the share URL is a distinct context)
+            // and inject the share identity's session id, so every handler
+            // downstream sees a perfectly normal authenticated request.
+            let cookie_name = crate::auth::session::SESSION_COOKIE;
+            let mut kept: Vec<String> = Vec::new();
+            if let Some(cookies) = parts
+                .headers
+                .get(axum::http::header::COOKIE)
+                .and_then(|v| v.to_str().ok())
+            {
+                for pair in cookies.split(';') {
+                    let pair = pair.trim();
+                    if pair.is_empty() {
+                        continue;
+                    }
+                    let name = pair.split('=').next().unwrap_or("").trim();
+                    if name != cookie_name {
+                        kept.push(pair.to_string());
+                    }
+                }
+            }
+            kept.push(format!("{}={}", cookie_name, session_id));
+            if let Ok(v) = axum::http::header::HeaderValue::from_str(&kept.join("; ")) {
+                parts.headers.insert(axum::http::header::COOKIE, v);
+            }
+
+            inner.call(axum::http::Request::from_parts(parts, body)).await
+        })
     }
 }
 
@@ -609,6 +751,14 @@ async fn main() {
                     }
                     Err(e) => tracing::warn!("Audit log cleanup failed: {e}"),
                 }
+                match db.delete_expired_shares() {
+                    Ok(n) => {
+                        if n > 0 {
+                            tracing::info!("Expired share link cleanup removed {n} rows");
+                        }
+                    }
+                    Err(e) => tracing::warn!("Expired share link cleanup failed: {e}"),
+                }
             }
         });
     }
@@ -642,7 +792,9 @@ async fn main() {
     // SDK's adaptive tuning never ramps below the operator's chosen settings.
     let caps_service = CapabilitiesRewrite::new(libfw_app, &config.libfw);
 
-    let mut app = Router::new()
+    let share_db = state.db.clone();
+
+    let core = Router::new()
         .route("/auth/login", get(api::auth::login))
         .route("/auth/callback", get(api::auth::callback))
         .route("/auth/logout", post(api::auth::logout))
@@ -665,6 +817,10 @@ async fn main() {
         )
         // Inline binary preview (images/video/audio) for the file detail view.
         .route("/api/files/raw", get(api::files::raw))
+        // Temporary share links（分享）: authenticated management…
+        .route("/api/files/share", post(api::share::create_share))
+        .route("/api/files/shares", get(api::share::list_shares))
+        .route("/api/files/share/{token}", delete(api::share::revoke_share))
         .route("/api/admin/users", get(api::admin::list_users))
         .route("/api/admin/groups", get(api::admin::list_groups))
         .route("/api/admin/groups", post(api::admin::create_group))
@@ -689,7 +845,21 @@ async fn main() {
         // release builds serve the minified assets embedded by build.rs. See
         // src/statics.rs.
         .fallback_service(crate::statics::frontend_router())
-        .with_state(state);
+        .with_state(state.clone());
+
+    // Share routes（分享）: a share URL IS a temporary session. The wildcard
+    // catch-all is fronted by ShareProxy, which swaps the URL token for the
+    // identity's standard session cookie and rewrites the request onto the
+    // normal routes above — so a share visitor is just a temporary, read-only
+    // user flowing through the unmodified auth → ACL → libfw pipeline, and
+    // every request they make stays under the share URL prefix.
+    let share_proxy = ShareProxy::new(core.clone(), share_db);
+    let mut app = Router::new()
+        .route("/s/{token}", get(api::share::share_index))
+        .route("/s/{token}/", get(api::share::share_page))
+        .route("/s/{token}/{*path}", any_service(share_proxy))
+        .with_state(state)
+        .merge(core);
 
     // CORS: only allow explicitly-configured origins ([server] allowed_origins).
     // When empty (the default) no CORS headers are emitted and cross-origin

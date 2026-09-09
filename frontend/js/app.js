@@ -3,17 +3,24 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Swap static `<i data-feather>` placeholders for inline SVG icons
   initIcons();
 
-  // Check auth first
+  // Share visitors hold a REAL temporary session (injected by the backend's
+  // ShareProxy from the URL token), so the standard /api/me flow works for
+  // them too — they show up as the share identity, read-only.
   await checkAuth();
+  if (SHARE) applyShareMode();
+  applyShareHeader();
 
-  // Load the initial directory from the address bar (hash routing), so a
-  // deep link like `#/public2/sub` opens directly in that folder.
-  loadFiles(getPathFromHash());
+  // Route the initial view from the address bar: '#/<dir>' lists a directory,
+  // '#file/<path>' opens a file page; a share URL boots the share root.
+  routeFromHash();
 
   // Setup event listeners
   setupEventListeners();
-  setupDragDrop();
-  setupMoveDragDrop();
+  if (!SHARE) {
+    // Upload/move drag&drop are write flows; share visitors are read-only.
+    setupDragDrop();
+    setupMoveDragDrop();
+  }
 
   // Close context menu on click outside
   document.addEventListener('click', () => hideContextMenu());
@@ -63,6 +70,18 @@ function setupEventListeners() {
     loadFiles(currentPath);
   });
 
+  // Multi-select action bar
+  document.getElementById('sel-download')?.addEventListener('click', () => downloadSelected());
+  document.getElementById('sel-delete')?.addEventListener('click', () => deleteSelected());
+  document.getElementById('sel-clear')?.addEventListener('click', () => clearSelection());
+  document.getElementById('sel-share')?.addEventListener('click', () => {
+    const items = [...selectedPaths.values()];
+    if (items.length) showShareModal(items);
+  });
+
+  // Share management（我的分享 / admin: 全部）
+  document.getElementById('btn-my-shares')?.addEventListener('click', () => showSharesModal());
+
   // Admin button
   document.getElementById('btn-admin')?.addEventListener('click', () => {
     toggleAdminPanel();
@@ -87,10 +106,13 @@ function setupEventListeners() {
     if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
     switch (e.key) {
       case 'Delete':
+        if (SHARE) break;
+        // Batch delete wins when multiple entries are selected.
+        if (selectedPaths.size > 0) { deleteSelected(); break; }
         if (selectedFile) handleContextAction('delete', selectedFile);
         break;
       case 'F2':
-        if (selectedFile) handleContextAction('rename', selectedFile);
+        if (selectedFile && !SHARE) handleContextAction('rename', selectedFile);
         break;
       case 'F5':
         e.preventDefault();

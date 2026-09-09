@@ -7,7 +7,10 @@ edition = "2021"
 axum = { version = "0.8", features = ["macros"] }
 axum-extra = { version = "0.10", features = ["cookie", "cookie-private", "cookie-signed"] }
 tokio = { version = "1", features = ["full"] }
-tower = { version = "0.4", features = ["make"] }
+# ReaderStream: streams file bodies (inline preview / share links) without
+# buffering them in memory.
+tokio-util = { version = "0.7", features = ["io"] }
+tower = { version = "0.4", features = ["make", "util"] }
 tower-http = { version = "0.5", features = ["cors", "fs", "set-header"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

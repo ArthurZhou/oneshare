@@ -14,10 +14,6 @@
   --accent-text: #ffffff;
   --error: #e63946;
   --muted: #666666;
-  --card-bg: #ffffff;
-  --row-hover: #f2f2f2;
-  --selection: #1a1a1a;
-  --selection-text: #ffffff;
   --drop-highlight: #c9c9c9;
   --shadow: rgba(0, 0, 0, 0.18);
 }
@@ -34,10 +30,6 @@
     --accent-text: #121212;
     --error: #ff6b6b;
     --muted: #888888;
-    --card-bg: #121212;
-    --row-hover: #1e1e1e;
-    --selection: #eeeeee;
-    --selection-text: #121212;
     --drop-highlight: #333333;
     --shadow: rgba(0, 0, 0, 0.5);
   }
@@ -76,7 +68,7 @@ body {
 }
 
 body {
-  font-family: sarasa, monospace;
+  font-family: sarasa, system-ui;
   background: var(--bg);
   color: var(--text);
   -webkit-tap-highlight-color: transparent;
@@ -245,7 +237,7 @@ a:hover {
   padding: 8px 14px;
   background: var(--bg);
   color: var(--text);
-  border: 1px solid var(--line);
+  border: 0px solid var(--line);
   font-family: inherit;
   font-size: 13px;
   font-weight: 900;
@@ -332,12 +324,18 @@ a:hover {
   padding: 0;
 }
 
+.file-list {
+  position: relative;
+}
+
 .file-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: 30px 40px minmax(0, 1fr) 90px 170px 42px;
   align-items: center;
+  gap: 0;
   padding: 12px 20px;
   cursor: default;
-  transition: background 0.1s;
+  transition: background 0.15s ease, transform 0.18s ease, opacity 0.18s ease, box-shadow 0.2s ease;
   /* Touch: prevent iOS long-press text-selection callout and text highlight
      while the long-press → context-menu gesture is active. */
   -webkit-touch-callout: none;
@@ -345,22 +343,29 @@ a:hover {
   user-select: none;
 }
 
+.file-row > * {
+  min-width: 0;
+}
+
 .file-row:hover {
-  background: var(--row-hover);
+  background: var(--secondary-bg);
 }
 
 .file-row.selected {
-  background: var(--selection);
-  color: var(--selection-text);
+  background: var(--secondary-bg);
 }
 
-.file-row.selected .file-size,
-.file-row.selected .file-mtime {
-  color: var(--selection-text);
+.file-row.selected > .file-check {
+  color: var(--text);
 }
 
 .file-row.header {
+  position: sticky;
+  top: 60px;
+  z-index: 12;
   border-bottom: 1px solid var(--line);
+  background: var(--bg);
+  box-shadow: 0 1px 0 var(--line);
   font-size: 11px;
   font-weight: 700;
   color: var(--muted);
@@ -368,6 +373,59 @@ a:hover {
   letter-spacing: 0.5px;
   padding-top: 8px;
   padding-bottom: 8px;
+}
+
+.file-row.header .file-actions {
+  width: 42px;
+  margin-left: 0;
+  justify-content: flex-end;
+}
+
+.file-header-cell {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: inherit;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  text-transform: inherit;
+  letter-spacing: inherit;
+  cursor: pointer;
+}
+
+.file-header-cell.file-name,
+.file-header-cell.file-size,
+.file-header-cell.file-mtime {
+  width: 100%;
+  min-width: 0;
+}
+
+.file-header-cell.file-size,
+.file-header-cell.file-mtime {
+  justify-content: flex-end;
+  text-align: right;
+}
+
+.file-header-cell.active {
+  color: var(--text);
+}
+
+.sort-indicator {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  height: 12px;
+  color: var(--text);
+}
+
+.sort-indicator .feather {
+  width: 10px;
+  height: 10px;
+  vertical-align: middle;
 }
 
 .file-icon {
@@ -378,7 +436,6 @@ a:hover {
 }
 
 .file-name {
-  flex: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -387,19 +444,19 @@ a:hover {
 }
 
 .file-size {
-  width: 100px;
   text-align: right;
   color: var(--muted);
   font-size: 12px;
   flex-shrink: 0;
+  justify-self: end;
 }
 
 .file-mtime {
-  width: 160px;
   text-align: right;
   color: var(--muted);
   font-size: 12px;
   flex-shrink: 0;
+  justify-self: end;
 }
 
 .file-row.dir {
@@ -409,7 +466,9 @@ a:hover {
 /* Drag & drop move: the row being dragged is dimmed; a folder row under the
    pointer is outlined as the drop target. */
 .file-row.dragging {
-  opacity: 0.4;
+  opacity: 0.45;
+  transform: scale(0.995);
+  box-shadow: inset 0 0 0 1px var(--line);
 }
 
 .file-row.drop-target {
@@ -417,8 +476,8 @@ a:hover {
      but not the text color), so the drop target stands out while the row
      text stays readable in both themes. */
   background: var(--drop-highlight);
-  outline: 1px solid var(--line);
-  outline-offset: -1px;
+  box-shadow: inset 0 0 0 1px var(--line);
+  transform: translateY(-1px);
 }
 
 /* Blank-area drop target: dropping on the list's empty space moves the item
@@ -442,8 +501,160 @@ a:hover {
 .file-actions {
   display: flex;
   gap: 6px;
+  width: 42px;
+  justify-content: flex-end;
   margin-left: 12px;
   flex-shrink: 0;
+}
+
+/* ── Multi-select（多选）── */
+.file-check {
+  width: 30px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: var(--muted);
+}
+
+.file-check:hover {
+  color: var(--text);
+}
+
+/* Floating batch-action bar, shown while entries are selected. */
+.selection-bar {
+  position: fixed;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 14px;
+  box-shadow: 0 4px 16px var(--shadow);
+  z-index: 90;
+}
+
+.selection-bar span {
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+/* ── Share links（分享）── */
+.share-form label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0;
+  font-size: 14px;
+}
+
+.share-note {
+  color: var(--muted);
+  font-size: 0.85em;
+  margin: 6px 0;
+}
+
+/* Match the admin-form controls: the raw browser default looked broken next
+   to the themed inputs/buttons in the dialog. */
+.share-form select,
+.share-result input {
+  padding: 9px 10px;
+  background: var(--input-bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 13px;
+  outline: 0;
+}
+
+.share-form select {
+  min-width: 140px;
+}
+
+.share-form select:focus,
+.share-result input:focus {
+  background: var(--bg);
+}
+
+.share-result {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.share-result input {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Share-mode header badge (replaces the login/logout slot for receivers). */
+.share-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+/* ── Share management（我的分享）── */
+.shares-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.share-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.share-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.share-name {
+  font-size: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.share-meta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.share-meta a {
+  color: var(--muted);
+}
+
+.share-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.shares-empty {
+  text-align: center;
+  color: var(--muted);
+  padding: 40px 20px;
+  font-size: 14px;
 }
 
 /* ── Drag overlay ── */
@@ -530,7 +741,7 @@ a:hover {
 }
 
 .modal {
-  background: var(--card-bg);
+  background: var(--bg);
   width: 100%;
   max-width: 460px;
   border: 1px solid var(--line);
@@ -630,6 +841,27 @@ a:hover {
 }
 
 /* ── File detail / inline preview / online editor ── */
+/* The file page (click a file → opens a page, like entering a folder). */
+.file-view {
+  padding: 20px 24px;
+}
+
+.file-view-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+  min-width: 0;
+}
+
+.file-view-title {
+  font-size: 15px;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .file-detail {
   display: flex;
   flex-direction: column;
@@ -667,8 +899,9 @@ a:hover {
   background: var(--secondary-bg);
   min-height: 140px;
   display: flex;
-  align-items: center;
-  justify-content: center;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
   overflow: auto;
 }
 
@@ -708,6 +941,7 @@ a:hover {
 }
 
 .text-editor {
+  display: block;
   width: 100%;
   min-height: 44vh;
   resize: vertical;
@@ -719,6 +953,7 @@ a:hover {
   font-size: 13px;
   line-height: 1.55;
   padding: 12px 14px;
+  box-sizing: border-box;
 }
 
 .editor-actions {
@@ -728,6 +963,7 @@ a:hover {
   gap: 10px;
   padding: 10px;
   border-top: 1px solid var(--line);
+  box-sizing: border-box;
 }
 
 .file-detail-empty {
@@ -879,7 +1115,6 @@ a:hover {
 
 .admin-tab:hover {
   color: var(--text);
-  background: var(--row-hover);
 }
 
 .admin-tab.active {
@@ -1000,7 +1235,7 @@ a:hover {
 }
 
 .admin-tr:hover {
-  background: var(--row-hover);
+  background: var(--secondary-bg);
 }
 
 .admin-tr.editing {
@@ -1139,7 +1374,7 @@ a:hover {
 }
 
 .admin-card:hover {
-  background: var(--row-hover);
+  background: var(--secondary-bg);
 }
 
 .admin-card-main {
@@ -1387,10 +1622,23 @@ a:hover {
 
 /* ── Responsive ── */
 @media (max-width: 640px) {
+  .file-row {
+    grid-template-columns: 30px 40px minmax(0, 1fr) 42px;
+  }
+
+  .file-row.header {
+    grid-template-columns: 30px 40px minmax(0, 1fr) 42px;
+  }
 
   .file-size,
-  .file-mtime {
+  .file-mtime,
+  .file-header-cell.file-size,
+  .file-header-cell.file-mtime {
     display: none;
+  }
+
+  .file-name {
+    padding-right: 6px;
   }
 
   .toolbar {

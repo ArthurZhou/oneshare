@@ -1,8 +1,33 @@
 // API client for OneShare backend
+
+// URL prefix the app is mounted under (set by the server-served config.js).
+// Empty string means the domain root. Never has a trailing slash.
+const ONESHARE_BASE = ((typeof window.ONESHARE_BASE === 'string' && window.ONESHARE_BASE) || '').replace(/\/+$/, '');
+
+// ── Share mode（分享视图）──
+//
+// When the app is served from a public share link (`/s/{token}`), EVERY
+// request — API, config, libfw /file//dir transfers — must stay under the
+// share URL. The backend's ShareProxy swaps the URL token for the temporary
+// identity's standard session cookie, so from here on a share visitor is
+// just an ordinary (read-only) logged-in user: no share-specific endpoints,
+// no special authorization.
+const SHARE = (() => {
+  let p = location.pathname;
+  if (ONESHARE_BASE && p.startsWith(ONESHARE_BASE)) p = p.slice(ONESHARE_BASE.length);
+  // Tokens are uuid-simple hex (32 chars); keep the pattern tight so the
+  // normal app never mistakes itself for a share.
+  const m = p.match(/^\/s\/([0-9a-f]{32})\/?$/);
+  return m ? { token: m[1] } : null;
+})();
+
+const API_BASE = ONESHARE_BASE + (SHARE ? '/s/' + SHARE.token : '');
+// libfw.js reads window.ONESHARE_BASE at load time (it runs AFTER this
+// script), so override it here to prefix its /file and /dir URLs too.
+if (SHARE) window.ONESHARE_BASE = API_BASE;
+
 const API = {
-  // URL prefix the app is mounted under (set by the server-served config.js).
-  // Empty string means the domain root. Never has a trailing slash.
-  base: ((typeof window.ONESHARE_BASE === 'string' && window.ONESHARE_BASE) || '').replace(/\/+$/, ''),
+  base: API_BASE,
 
   // Percent-encode each path segment separately so `/` stays a separator in the
   // URL (the server's `{*path}` capture then decodes each segment correctly).
@@ -48,12 +73,20 @@ const API = {
   // ── libfw Token ──
   getToken: (path, op = 'read') => API.fetch(`/api/files/token?path=${encodeURIComponent(path)}&op=${op}`),
 
+  // ── Share links（分享）──
+  // items: one path for a single share, or several paths for a multi-item
+  // "virtual root" collection (the receiver gets a landing view).
+  createShare: (items, ttlSecs) => API.fetch('/api/files/share', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ items, ttl_secs: ttlSecs }) }),
+  listShares: () => API.fetch('/api/files/shares'),
+  revokeShare: (token) => API.fetch(`/api/files/share/${encodeURIComponent(token)}`, { method: 'DELETE' }),
+
   // ── File detail / inline preview / online edit ──
   // Metadata + (for small text files) full text content for preview & editing.
   getFileDetail: (path) => API.fetch(`/api/files/content?path=${encodeURIComponent(path)}`),
   // Save edited text content back to the server (requires write permission).
   saveFileContent: (path, content) => API.fetch('/api/files/content', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path, content }) }),
-  // Inline binary preview URL (<img>/<video>/<audio>); auth via session cookie.
+  // Inline binary preview URL (<img>/<video>/<audio>); auth via session cookie
+  // (in share mode the temporary identity's session, injected by the proxy).
   rawUrl: (path) => `${API.base}/api/files/raw?path=${encodeURIComponent(path)}`,
 
   // ── Admin ──

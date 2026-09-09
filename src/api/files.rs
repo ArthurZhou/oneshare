@@ -1,6 +1,6 @@
 use crate::acl::{self, Permission};
 use crate::audit::{self, actions};
-use crate::auth::session::get_request_user;
+use crate::auth::session::{get_request_user, RequestUser};
 use crate::db::{AclEntryRow, UserRow};
 use crate::libtoken::issue_token;
 use crate::models::*;
@@ -127,11 +127,9 @@ pub async fn list(
     let requested = requested.trim_start_matches('/').to_string();
 
     // Fetch the ACL context once and reuse it for the directory itself and
-    // every entry, so listings hide anything the user cannot read.
-    let acl_entries = state
-        .db
-        .list_acl_entries()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    // every entry, so listings hide anything the user cannot read. For a
+    // share visitor this includes the share's synthesized READ grants.
+    let acl_entries = ru.acl_entries(&state.db)?;
 
     let root = state.config.root_dir().clone();
     let at_root = requested.is_empty();
@@ -158,15 +156,19 @@ pub async fn list(
     let mut raw: Vec<(FileEntry, String)> = Vec::new();
 
     if show_share_root {
-        // Virtual share root: each share is a top-level virtual directory.
+        // Virtual share root: each share (an ACL-granted path) is a top-level
+        // entry. Usually a directory — but ACLs may also point at a single
+        // FILE (temporary share identities do exactly that), so stat and
+        // render files as file entries instead of dropping them.
         for share in acl::user_shares(&user, &user_groups, &acl_entries) {
             let full = root.join(&share.real_path);
-            if !full.is_dir() {
+            let Ok(md) = std::fs::metadata(&full) else {
                 continue;
-            }
-            let modified = std::fs::metadata(&full)
+            };
+            let is_dir = md.is_dir();
+            let modified = md
+                .modified()
                 .ok()
-                .and_then(|m| m.modified().ok())
                 .and_then(|t| {
                     chrono::DateTime::from_timestamp(
                         t.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs() as i64,
@@ -175,14 +177,21 @@ pub async fn list(
                 })
                 .map(|d| d.format("%Y-%m-%d %H:%M").to_string())
                 .unwrap_or_default();
+            let mime_type = if is_dir {
+                "inode/directory".to_string()
+            } else {
+                mime_guess::from_path(&share.real_path)
+                    .first_or_octet_stream()
+                    .to_string()
+            };
             raw.push((
                 FileEntry {
                     name: share.virtual_name.clone(),
                     path: share.virtual_name.clone(),
-                    is_dir: true,
-                    size: 0,
+                    is_dir,
+                    size: md.len(),
                     modified,
-                    mime_type: "inode/directory".to_string(),
+                    mime_type,
                 },
                 share.real_path.clone(),
             ));
@@ -260,7 +269,7 @@ pub async fn list(
 /// following links) and rejects the operation if any component is a
 /// symlink. A missing component (e.g. the destination of a move that does
 /// not exist yet) stops the walk early — nothing after it can exist either.
-fn ensure_no_symlink(root: &std::path::Path, rel: &str) -> Result<(), StatusCode> {
+pub(crate) fn ensure_no_symlink(root: &std::path::Path, rel: &str) -> Result<(), StatusCode> {
     let mut cur = root.to_path_buf();
     for comp in std::path::Path::new(rel).components() {
         cur.push(comp);
@@ -291,7 +300,7 @@ pub async fn delete(
 ) -> Result<impl IntoResponse, StatusCode> {
     let ru = get_request_user(&jar, &state.db).await?;
 
-    let real = resolve_checked(&state, &ru.user, &ru.groups, &body.path, Permission::Write).await?;
+    let real = resolve_checked(&state, &ru, &body.path, Permission::Write).await?;
     // Refuse to act on the filesystem root itself: no UI flow produces this,
     // and both "move the whole root into the trash" and "remove_dir_all the
     // root" would be catastrophic.
@@ -461,7 +470,7 @@ pub async fn rename(
 ) -> Result<impl IntoResponse, StatusCode> {
     let ru = get_request_user(&jar, &state.db).await?;
 
-    let real = resolve_checked(&state, &ru.user, &ru.groups, &body.path, Permission::Write).await?;
+    let real = resolve_checked(&state, &ru, &body.path, Permission::Write).await?;
     let root = state.config.root_dir().clone();
     ensure_no_symlink(&root, &real)?;
     let old_full = root.join(&real);
@@ -528,8 +537,8 @@ pub async fn mv(
 ) -> Result<impl IntoResponse, StatusCode> {
     let ru = get_request_user(&jar, &state.db).await?;
 
-    let src_real = resolve_checked(&state, &ru.user, &ru.groups, &body.source, Permission::Write).await?;
-    let dst_real = resolve_checked(&state, &ru.user, &ru.groups, &body.destination, Permission::Write).await?;
+    let src_real = resolve_checked(&state, &ru, &body.source, Permission::Write).await?;
+    let dst_real = resolve_checked(&state, &ru, &body.destination, Permission::Write).await?;
 
     let root = state.config.root_dir().clone();
     ensure_no_symlink(&root, &src_real)?;
@@ -589,7 +598,7 @@ pub async fn mkdir(
     // Admin: path is real. Non-admin: path is the virtual parent directory
     // (e.g. `public2` → real `nested/public2`); the new folder is created
     // inside the resolved real parent.
-    let real = resolve_checked(&state, &ru.user, &ru.groups, &body.path, Permission::Write).await?;
+    let real = resolve_checked(&state, &ru, &body.path, Permission::Write).await?;
     let root = state.config.root_dir().clone();
     // Check the parent chain AND the would-be target: `create_dir_all`
     // follows symlinks, so a symlink in the chain (or a same-named symlink
@@ -637,12 +646,55 @@ pub async fn mkdir(
 
 /// Maximum size (bytes) of a text file served to / accepted from the editor.
 const MAX_TEXT_SIZE: u64 = 1024 * 1024;
-/// Maximum size (bytes) served by the inline `/api/files/raw` preview.
-const MAX_RAW_PREVIEW: u64 = 64 * 1024 * 1024;
 
 /// Leaf name of a real (sanitized) relative path.
 fn leaf_name(real: &str) -> &str {
     real.rsplit('/').next().unwrap_or(real)
+}
+
+/// Read a file for inline text preview / editing.
+///
+/// Returns `(is_text, content, truncated)`: within [`MAX_TEXT_SIZE`] the
+/// bytes are read once and classified by content — declared text MIME types
+/// are served as text, and so is any file that is valid UTF-8 without NUL
+/// bytes (catches extension-less scripts/configs). Anything else is binary.
+/// Text larger than the limit is reported as `truncated` so the UI can offer
+/// download instead. Shared by the authenticated editor endpoint
+/// (`get_content`) and the public share detail endpoint.
+pub(crate) fn read_text_preview(
+    full: &std::path::Path,
+    mime: &str,
+    size: u64,
+) -> (bool, Option<String>, bool) {
+    let mut is_text = is_text_mime(mime);
+    let mut content = None;
+    let mut truncated = false;
+
+    if size <= MAX_TEXT_SIZE {
+        match std::fs::read(full) {
+            Ok(bytes) => {
+                let looks_text = !bytes.contains(&0u8);
+                match String::from_utf8(bytes) {
+                    Ok(text) if is_text || looks_text => {
+                        is_text = true;
+                        content = Some(text);
+                    }
+                    _ => is_text = false,
+                }
+            }
+            Err(e) => {
+                // Unreadable file: report as non-text rather than failing the
+                // whole detail response (metadata is still useful).
+                tracing::error!("Failed to read '{}' for preview: {}", full.display(), e);
+                return (false, None, false);
+            }
+        }
+    } else if is_text {
+        truncated = true;
+    } else {
+        is_text = false;
+    }
+    (is_text, content, truncated)
 }
 
 /// Whether a MIME type denotes a plain-text family we preview/edit inline.
@@ -669,11 +721,12 @@ fn is_text_mime(mime: &str) -> bool {
         )
 }
 
-/// Whether `/api/files/raw` may serve the file inline. Deliberately limited
-/// to browser-safe media: images (never SVG — it can carry scripts, which
-/// would be a stored-XSS hole when served same-origin), video and audio.
-/// HTML/PDF/etc. are download-only.
-fn is_safe_inline_mime(mime: &str) -> bool {
+/// Whether a response body may be served inline (`<img>`/`<video>`/`<audio>`
+/// or a browser-visible page). Deliberately limited to browser-safe media:
+/// images (never SVG — it can carry scripts, which would be a stored-XSS
+/// hole when served same-origin), video and audio. HTML/PDF/etc. are
+/// download-only.
+pub(crate) fn is_safe_inline_mime(mime: &str) -> bool {
     let mime = mime.split(';').next().unwrap_or(mime).trim();
     (mime.starts_with("image/") && mime != "image/svg+xml")
         || mime.starts_with("video/")
@@ -687,8 +740,7 @@ pub async fn get_content(
     Query(query): Query<crate::models::ContentQuery>,
 ) -> Result<Json<crate::models::FileContentResponse>, StatusCode> {
     let ru = get_request_user(&jar, &state.db).await?;
-    let real =
-        resolve_checked(&state, &ru.user, &ru.groups, &query.path, Permission::Read).await?;
+    let real = resolve_checked(&state, &ru, &query.path, Permission::Read).await?;
     let root = state.config.root_dir().clone();
     ensure_no_symlink(&root, &real)?;
     let full = root.join(&real);
@@ -703,10 +755,7 @@ pub async fn get_content(
         .first_or_octet_stream()
         .to_string();
 
-    let acl_entries = state
-        .db
-        .list_acl_entries()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let acl_entries = ru.acl_entries(&state.db)?;
     let writable =
         acl::can_access(&ru.user, &ru.groups, &acl_entries, &real, &Permission::Write);
 
@@ -715,32 +764,7 @@ pub async fn get_content(
     // file that is valid UTF-8 without NUL bytes (catches extension-less
     // scripts/configs). Anything else is binary. Text larger than the limit
     // is reported as `truncated` so the UI can offer download instead.
-    let mut is_text = is_text_mime(&mime);
-    let mut content = None;
-    let mut truncated = false;
-
-    if meta.len() <= MAX_TEXT_SIZE {
-        match std::fs::read(&full) {
-            Ok(bytes) => {
-                let looks_text = !bytes.contains(&0u8);
-                match String::from_utf8(bytes) {
-                    Ok(text) if is_text || looks_text => {
-                        is_text = true;
-                        content = Some(text);
-                    }
-                    _ => is_text = false,
-                }
-            }
-            Err(e) => {
-                tracing::error!("Failed to read '{}' for preview: {}", full.display(), e);
-                return Err(StatusCode::INTERNAL_SERVER_ERROR);
-            }
-        }
-    } else if is_text {
-        truncated = true;
-    } else {
-        is_text = false;
-    }
+    let (is_text, content, truncated) = read_text_preview(&full, &mime, meta.len());
 
     Ok(Json(crate::models::FileContentResponse {
         name,
@@ -782,7 +806,7 @@ pub async fn put_content(
     }
 
     let real =
-        resolve_checked(&state, &ru.user, &ru.groups, &body.path, Permission::Write).await?;
+        resolve_checked(&state, &ru, &body.path, Permission::Write).await?;
     let root = state.config.root_dir().clone();
     ensure_no_symlink(&root, &real)?;
     let full = root.join(&real);
@@ -823,29 +847,184 @@ pub async fn put_content(
     Ok(StatusCode::OK)
 }
 
+/// Parse a single-range `Range: bytes=…` header against a resource of `size`
+/// bytes. Only the FIRST range of a multi-range request is honored (browsers
+/// send one range per media seek, so this covers real usage).
+///
+/// Returns `None` for an absent/empty/`bytes=`-less header (serve 200 full
+/// body), `Some((start, end))` with `end` inclusive, or `Err(())` when the
+/// header is well-formed but unsatisfiable (→ 416).
+fn parse_byte_range(header: &str, size: u64) -> Result<Option<(u64, u64)>, ()> {
+    // Absent unit / other units (`items=…`): ignore the header and serve the
+    // full body (200), per RFC 9110 §14.2.
+    let rest = match header.trim().strip_prefix("bytes=") {
+        Some(rest) => rest,
+        None => return Ok(None),
+    };
+    let first = rest.split(',').next().unwrap_or("").trim();
+    let (start_s, end_s) = first.split_once('-').ok_or(())?;
+
+    let range = if start_s.is_empty() {
+        // Suffix range: the LAST `end_s` bytes (`bytes=-500`). An empty or
+        // zero suffix means nothing — treat as unsatisfiable.
+        let suffix: u64 = end_s.parse().map_err(|_| ())?;
+        if suffix == 0 {
+            return Err(());
+        }
+        let start = size.saturating_sub(suffix);
+        (start, size.saturating_sub(1))
+    } else {
+        let start: u64 = start_s.parse().map_err(|_| ())?;
+        let end = if end_s.is_empty() {
+            size.saturating_sub(1)
+        } else {
+            end_s.parse::<u64>().map_err(|_| ())?.min(size.saturating_sub(1))
+        };
+        if start > end {
+            return Err(());
+        }
+        (start, end)
+    };
+
+    if size == 0 || range.0 >= size {
+        return Err(());
+    }
+    Ok(Some(range))
+}
+
+/// Build a `Content-Disposition` header value with an ASCII fallback name and
+/// an RFC 5987 `filename*=UTF-8''` form, so non-ASCII (Chinese) filenames
+/// survive every browser.
+fn content_disposition(kind: &str, name: &str) -> String {
+    use percent_encoding::{utf8_percent_encode, AsciiSet, CONTROLS};
+    const PCT: &AsciiSet = &CONTROLS.add(b'"').add(b'\\').add(b'%');
+    let ascii: String = name
+        .chars()
+        .map(|c| {
+            if c.is_ascii() && c != '"' && c != '\\' && !c.is_control() {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    format!(
+        "{}; filename=\"{}\"; filename*=UTF-8''{}",
+        kind,
+        ascii,
+        utf8_percent_encode(name, PCT)
+    )
+}
+
+/// Stream a file off disk as the response body.
+///
+/// Never loads the file into memory: bytes flow from `tokio::fs::File` through
+/// a `ReaderStream` in 64 KiB chunks, so videos of any size preview fine.
+/// Honors a single `Range: bytes=…` request (206 + `Content-Range`), which is
+/// what makes `<video>`/`<audio>` seeking work; responses always advertise
+/// `Accept-Ranges: bytes`.
+///
+/// Shared by the authenticated inline preview (`/api/files/raw`) and the
+/// public share-link endpoints (`/s/{token}`, `/s/{token}/raw`).
+pub(crate) async fn serve_file_response(
+    full: &std::path::Path,
+    mime: &str,
+    range: Option<&str>,
+    inline: bool,
+    name: &str,
+) -> Result<Response, StatusCode> {
+    use tokio::io::AsyncSeekExt;
+
+    let meta = tokio::fs::metadata(full)
+        .await
+        .map_err(|_| StatusCode::NOT_FOUND)?;
+    if meta.is_dir() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let size = meta.len();
+
+    let disposition = content_disposition(
+        if inline { "inline" } else { "attachment" },
+        name,
+    );
+
+    // Unsatisfiable range → 416 with the conventional `*/size` Content-Range.
+    let parsed = match range {
+        Some(r) => match parse_byte_range(r, size) {
+            Ok(parsed) => parsed,
+            Err(()) => {
+                return Response::builder()
+                    .status(StatusCode::RANGE_NOT_SATISFIABLE)
+                    .header("content-range", format!("bytes */{}", size))
+                    .header("accept-ranges", "bytes")
+                    .body(Body::empty())
+                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR);
+            }
+        },
+        None => None,
+    };
+
+    let mut file = tokio::fs::File::open(full)
+        .await
+        .map_err(|_| StatusCode::NOT_FOUND)?;
+
+    let (status, _start, length) = match parsed {
+        Some((start, end)) => {
+            file.seek(std::io::SeekFrom::Start(start))
+                .await
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            (
+                StatusCode::PARTIAL_CONTENT,
+                start,
+                end - start + 1,
+            )
+        }
+        None => (StatusCode::OK, 0, size),
+    };
+
+    let stream = tokio_util::io::ReaderStream::with_capacity(file, 64 * 1024);
+
+    let mut builder = Response::builder()
+        .status(status)
+        .header("content-type", mime)
+        .header("content-length", length)
+        .header("accept-ranges", "bytes")
+        .header("content-disposition", disposition)
+        // Never let the browser sniff around our declared (safe) type.
+        .header("x-content-type-options", "nosniff")
+        // Share links are unauthenticated URLs carrying their own secret
+        // token; no caching keeps revoked/expired links honest.
+        .header("cache-control", "no-cache");
+    if let Some((start, end)) = parsed {
+        builder = builder.header("content-range", format!("bytes {}-{}/{}", start, end, size));
+    }
+
+    builder
+        .body(Body::from_stream(stream))
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
 /// Serve a file's raw bytes for inline preview (`<img>`/`<video>`/`<audio>`).
 ///
 /// Authenticated by session cookie like every other `/api/files` endpoint,
 /// so plain element sources work without bearer-token plumbing. Restricted
 /// to browser-safe media types (see [`is_safe_inline_mime`]).
+///
+/// The body is STREAMED (see [`serve_file_response`]) with HTTP Range
+/// support — there is no size cap and no buffering: large videos preview
+/// and seek without ever being loaded into memory or routed through the
+/// libfw transfer protocol.
 pub async fn raw(
     State(state): State<Arc<AppState>>,
     jar: CookieJar,
+    headers: axum::http::HeaderMap,
     Query(query): Query<crate::models::ContentQuery>,
 ) -> Result<Response, StatusCode> {
     let ru = get_request_user(&jar, &state.db).await?;
-    let real = resolve_checked(&state, &ru.user, &ru.groups, &query.path, Permission::Read).await?;
+    let real = resolve_checked(&state, &ru, &query.path, Permission::Read).await?;
     let root = state.config.root_dir().clone();
     ensure_no_symlink(&root, &real)?;
     let full = root.join(&real);
-
-    let meta = std::fs::metadata(&full).map_err(|_| StatusCode::NOT_FOUND)?;
-    if meta.is_dir() {
-        return Err(StatusCode::BAD_REQUEST);
-    }
-    if meta.len() > MAX_RAW_PREVIEW {
-        return Err(StatusCode::PAYLOAD_TOO_LARGE);
-    }
 
     let mime = mime_guess::from_path(leaf_name(&real))
         .first_or_octet_stream()
@@ -854,34 +1033,26 @@ pub async fn raw(
         return Err(StatusCode::UNSUPPORTED_MEDIA_TYPE);
     }
 
-    let bytes = std::fs::read(&full).map_err(|e| {
-        tracing::error!("Failed to read '{}' for preview: {}", full.display(), e);
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
-
-    Response::builder()
-        .header("content-type", mime)
-        .header("content-length", bytes.len())
-        .header("content-disposition", "inline")
-        // Never let the browser sniff around our declared (safe) type.
-        .header("x-content-type-options", "nosniff")
-        .body(Body::from(bytes))
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+    serve_file_response(
+        &full,
+        &mime,
+        headers.get(axum::http::header::RANGE).and_then(|v| v.to_str().ok()),
+        true,
+        leaf_name(&real),
+    )
+    .await
 }
 
 /// Resolve a frontend-supplied path to a real path and check `required`
 /// permission on it. Returns 403/404 for paths outside the user's access.
-async fn resolve_checked(
+pub(crate) async fn resolve_checked(
     state: &Arc<AppState>,
-    user: &UserRow,
-    user_groups: &[i64],
+    ru: &RequestUser,
     path: &str,
     required: Permission,
 ) -> Result<String, StatusCode> {
-    let acl_entries = state
-        .db
-        .list_acl_entries()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let acl_entries = ru.acl_entries(&state.db)?;
+    let (user, user_groups) = (&ru.user, &ru.groups);
 
     let real = resolve_for_user(user, user_groups, &acl_entries, path)
         .ok_or(StatusCode::FORBIDDEN)?;
@@ -936,7 +1107,7 @@ pub async fn get_names(
     let ru = get_request_user(&jar, &state.db).await?;
     let acl_entries = state
         .db
-        .list_acl_entries()
+        .list_acl_entries_cached()
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     let mut out = HashMap::with_capacity(paths.len());
@@ -1012,10 +1183,7 @@ pub async fn get_token(
     // - a display path (non-admin ACL share) / real path (admin) — resolved
     //   through the ACL layer as before. The response's `path` field is the
     //   shadow; transfer URLs MUST use it.
-    let acl_entries = state
-        .db
-        .list_acl_entries()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let acl_entries = ru.acl_entries(&state.db)?;
     let permission = match query.op.as_str() {
         "write" => Permission::Write,
         _ => Permission::Read,
@@ -1032,7 +1200,7 @@ pub async fn get_token(
             // Not a shadow: resolve the display/real path through the ACL
             // layer (admin/root-ACL users pass real paths; non-admins pass
             // share display paths).
-            resolve_checked(&state, &ru.user, &ru.groups, &query.path, permission).await?
+            resolve_checked(&state, &ru, &query.path, permission).await?
         }
     };
 
@@ -1093,6 +1261,53 @@ mod tests {
         let p = std::env::temp_dir().join(format!("oneshare-{}-{}", name, std::process::id()));
         let _ = std::fs::remove_dir_all(&p);
         p
+    }
+
+    #[test]
+    fn byte_range_open_ended_clamps_to_size() {
+        // bytes=100- over a 500-byte file → 100..=499
+        assert_eq!(parse_byte_range("bytes=100-", 500).unwrap(), Some((100, 499)));
+    }
+
+    #[test]
+    fn byte_range_end_clamps_beyond_size() {
+        // bytes=100-999 over a 500-byte file → end clamps to 499
+        assert_eq!(parse_byte_range("bytes=100-999", 500).unwrap(), Some((100, 499)));
+    }
+
+    #[test]
+    fn byte_range_suffix_reads_from_the_end() {
+        // bytes=-100 over a 500-byte file → the last 100 bytes
+        assert_eq!(parse_byte_range("bytes=-100", 500).unwrap(), Some((400, 499)));
+        // Suffix longer than the file → the whole file
+        assert_eq!(parse_byte_range("bytes=-1000", 500).unwrap(), Some((0, 499)));
+    }
+
+    #[test]
+    fn byte_range_unsatisfiable_requests_error() {
+        // start past the end, zero-length suffix, and malformed specs → 416
+        assert!(parse_byte_range("bytes=500-", 500).is_err());
+        assert!(parse_byte_range("bytes=-0", 500).is_err());
+        assert!(parse_byte_range("bytes=300-200", 500).is_err());
+        assert!(parse_byte_range("bytes=abc-", 500).is_err());
+    }
+
+    #[test]
+    fn byte_range_absent_or_foreign_unit_is_ignored() {
+        assert_eq!(parse_byte_range("bytes=0-4", 500).unwrap(), Some((0, 4)));
+        // No header / wrong unit → serve the full body (200)
+        assert_eq!(parse_byte_range("", 500).unwrap(), None);
+        assert_eq!(parse_byte_range("items=0-4", 500).unwrap(), None);
+        // Only the first range of a multi-range request is honored
+        assert_eq!(parse_byte_range("bytes=0-4,10-20", 500).unwrap(), Some((0, 4)));
+    }
+
+    #[test]
+    fn content_disposition_escapes_non_ascii_and_quotes() {
+        let v = content_disposition("inline", "报告 final\"v2\".pdf");
+        assert!(v.starts_with("inline;"));
+        assert!(v.contains("filename=\"__ final_v2_.pdf\""));
+        assert!(v.contains("filename*=UTF-8''"));
     }
 
     /// Whole-string-only codec (like `EncryptedPathCodec`): only `"docs"`

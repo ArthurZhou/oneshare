@@ -91,6 +91,53 @@ pub struct FileContentResponse {
     pub truncated: bool,
 }
 
+/// Body of `POST /api/files/share` (create a temporary share link).
+/// `items` holds one path for a single file/folder share, or several paths
+/// for a multi-item "virtual root" collection share. `ttl_secs == 0` means
+/// the link never expires.
+#[derive(Debug, Deserialize)]
+pub struct CreateShareRequest {
+    #[serde(default)]
+    pub items: Vec<String>,
+    #[serde(default)]
+    pub ttl_secs: u64,
+}
+
+/// Response of `POST /api/files/share`: the secret token plus the URL path
+/// receivers open (`/s/{token}`, relative — the frontend prefixes its base).
+#[derive(Debug, Serialize)]
+pub struct ShareLinkResponse {
+    pub token: String,
+    pub url: String,
+    pub expires_at: Option<String>,
+}
+
+/// One top-level item of a share, as shown in the owner's management list.
+#[derive(Debug, Serialize)]
+pub struct ShareItemInfo {
+    pub name: String,
+    /// Path as the OWNER sees it (never a real filesystem path for
+    /// non-admins).
+    pub path: String,
+    pub is_dir: bool,
+}
+
+/// One share link as listed for its owner (`GET /api/files/shares`).
+#[derive(Debug, Serialize)]
+pub struct ShareLinkInfo {
+    pub token: String,
+    pub name: String,
+    /// Path as the OWNER sees it (never a real filesystem path for
+    /// non-admins). Empty for multi-item collections.
+    pub path: String,
+    pub is_dir: bool,
+    /// Top-level items; non-empty only for multi-item collections.
+    pub items: Vec<ShareItemInfo>,
+    pub creator: String,
+    pub expires_at: Option<String>,
+    pub url: String,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct SetAclRequest {
     pub path: String,

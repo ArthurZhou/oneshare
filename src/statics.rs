@@ -39,6 +39,47 @@ pub fn frontend_router() -> Router {
     }
 }
 
+/// Serve the frontend `index.html` directly.
+///
+/// Used by public share links (`/s/{token}`): instead of a bespoke share
+/// page, receivers get the REAL application UI, which boots in "share mode"
+/// and treats the shared content as a temporary virtual root.
+pub async fn serve_index() -> axum::response::Response {
+    #[cfg(debug_assertions)]
+    {
+        use axum::response::IntoResponse;
+        match tokio::fs::read_to_string("./frontend/index.html").await {
+            Ok(html) => (
+                [
+                    (header::CONTENT_TYPE, "text/html; charset=utf-8"),
+                    (header::CACHE_CONTROL, "no-cache, must-revalidate"),
+                ],
+                html,
+            )
+                .into_response(),
+            Err(e) => {
+                tracing::error!("Failed to read ./frontend/index.html: {}", e);
+                (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "frontend missing").into_response()
+            }
+        }
+    }
+
+    #[cfg(not(debug_assertions))]
+    {
+        use axum::response::IntoResponse;
+        // Same cache policy as the fallback-served index: never cached, so a
+        // new binary's `?v=`-versioned asset URLs take effect immediately.
+        (
+            [
+                (header::CONTENT_TYPE, "text/html; charset=utf-8"),
+                (header::CACHE_CONTROL, "no-cache, must-revalidate"),
+            ],
+            versioned_html(INDEX_HTML),
+        )
+            .into_response()
+    }
+}
+
 /// Content-hash of the entire embedded frontend bundle. Stable for a given
 /// binary and changes whenever any embedded asset changes, so it can be used
 /// as a cache-busting version (`?v=…`) on asset URLs that are served with

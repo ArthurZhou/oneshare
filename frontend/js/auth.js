@@ -22,18 +22,23 @@ function updateUserUI() {
     // any page that can make the browser navigate to it (image tags, etc.).
     // POST with SameSite cookies is not cross-site triggerable.
     el.innerHTML = `
-      <span>${iconSvg('user')} ${escapeHtml(currentUser.display_name)}</span>
+      <span>${SHARE ? '' : iconSvg('user') + escapeHtml(currentUser.display_name)}</span>
       ${currentUser.is_admin ? '<span class="admin-tag">（管理员）</span>' : ''}
-      <form action="${API.base}/auth/logout" method="post" style="display:inline">
+      ${SHARE ? '' : `<form action="${API.base}/auth/logout" method="post" style="display:inline">
         <button type="submit" class="btn btn-sm">登出</button>
-      </form>
+      </form>`}
     `;
     // Show/hide admin button
     const adminBtn = document.getElementById('btn-admin');
     if (adminBtn) adminBtn.style.display = currentUser.is_admin ? '' : 'none';
+    // Share management is a logged-in capability (guests cannot mint links).
+    const sharesBtn = document.getElementById('btn-my-shares');
+    if (sharesBtn) sharesBtn.style.display = '';
   } else {
     el.innerHTML = `<a href="${API.base}/auth/login" class="btn btn-sm">登录</a>`;
     const adminBtn = document.getElementById('btn-admin');
     if (adminBtn) adminBtn.style.display = 'none';
+    const sharesBtn = document.getElementById('btn-my-shares');
+    if (sharesBtn) sharesBtn.style.display = 'none';
   }
 }

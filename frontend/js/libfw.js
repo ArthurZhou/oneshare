@@ -165,7 +165,7 @@
       this._downloadAsLeaf = true;
       this._leafName = leafName || null;
       try {
-        return await super.downloadFile(token, filePath);
+        return await this._withReusedDirHandle(() => super.downloadFile(token, filePath));
       } finally {
         this._downloadAsLeaf = false;
         this._leafName = null;
@@ -180,7 +180,27 @@
     // (not the opaque `v1.…` shadow).
     async downloadFolder(token, filePath) {
       if (filePath) this._ensureMapped(filePath).catch(() => {});
-      return super.downloadFolder(token, filePath);
+      return this._withReusedDirHandle(() => super.downloadFolder(token, filePath));
+    }
+
+    // ── Batch downloads（多选合并下载）──
+    //
+    // The SDK's downloadFile/downloadFolder call `window.showDirectoryPicker`
+    // unconditionally, so a multi-select download would prompt once PER item.
+    // While `_batchReuse` is set and a directory handle was already picked
+    // (by the batch's first item), the picker is stubbed to return the SAME
+    // handle — one prompt for the whole batch, everything lands in it.
+    _withReusedDirHandle(run) {
+      const reusable = this._batchReuse && this._dirHandle
+        && typeof window !== 'undefined' && typeof window.showDirectoryPicker === 'function';
+      if (!reusable) return run();
+      const orig = window.showDirectoryPicker;
+      window.showDirectoryPicker = async () => this._dirHandle;
+      try {
+        return run();
+      } finally {
+        window.showDirectoryPicker = orig;
+      }
     }
 
     // Shadow → display path, resolved lazily from `/api/files/names` and
@@ -537,6 +557,15 @@
     },
     pause() { if (this._client) { try { this._client.pause(); } catch (e) { /* noop */ } } },
     resume() { if (this._client) { try { this._client.resume(); } catch (e) { /* noop */ } } },
+
+    // Batch download mode: create the client if needed and flag it so every
+    // download of the batch reuses the directory picked by its first item
+    // (see OneshareLibfwClient._withReusedDirHandle). Pass `false` when the
+    // batch ends.
+    setBatchReuse(on) {
+      if (on) this._getClient('');
+      if (this._client) this._client._batchReuse = !!on;
+    },
   };
 
   window.Libfw = Libfw;
