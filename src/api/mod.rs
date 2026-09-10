@@ -28,9 +28,15 @@ pub async fn config_js(State(state): State<Arc<AppState>>) -> impl IntoResponse 
     let libfw = &state.config.libfw;
     let libfw_json = serde_json::json!({
         "compress": libfw.compression_format() == CompressionFormat::Zrip,
+        // zrip level policy for the SDK's `compressLevel` option: a named
+        // policy (`auto`/`fast`/`balanced`/`max`) or a numeric level. An
+        // unrecognised value was already warned about at startup and falls
+        // back to "balanced" — the same default libfw-client uses.
+        "compressLevel": libfw.compress_level_json(),
         "concurrency": libfw.concurrency,
+        // Shared chunk size for upload chunks and download byte ranges
+        // (libfw-client >= 0.4.4 unified the old upload/download knobs).
         "chunkSize": libfw.chunk_size,
-        "downloadChunkSize": libfw.chunk_size,
         "uploadWindow": libfw.upload_window,
         "downloadWindow": libfw.download_window,
         "maxRetries": libfw.max_retries,

@@ -102,13 +102,15 @@ The callback URL (`redirect_uri`) needs **no configuration**: it is derived per-
 |-----|---------|-------------|
 | `path_key` | *(required)* | 64-hex AES-256 key encrypting paths into opaque shadows (`openssl rand -hex 32`) |
 | `compression` | `"none"` | Download compression: `none` or `zrip` |
+| `compress_level` | `"balanced"` | Client zrip level policy: `fast` / `balanced` / `max` / `auto` / a numeric level |
 | `max_upload_size` | `107374182400` | Upper bound for a single upload body (bytes) |
 | `concurrency` | `4` | Parallel transfer requests |
 | `chunk_size` | `2097152` | Upload chunk and download byte-range size |
 | `upload_window` / `download_window` | `4` | Per-file in-flight chunks (progress granularity vs. throughput) |
 | `max_retries` / `base_retry_delay_ms` / `max_retry_delay_ms` | `3` / `500` / `30000` | Retry policy |
 | `timeout_ms` | `600000` | Per-read idle timeout — keep generous; aborts a transfer if any single read stalls |
-| `auto_tune` / `tune_ttl_ms` | `false` / `3600000` | Adaptive client tuning via `/capabilities` |
+| `auto_tune` / `tune_ttl_ms` | `false` / `3600000` | Adaptive client tuning via `/capabilities`; `0` disables the settle cache |
+| `auto_tune_max_chunk_size` | `8388608` | Chunk-size ceiling the adaptive engine may grow to (only with `auto_tune`) |
 
 ---
 

@@ -53,6 +53,15 @@ path_key = "<openssl rand -hex 32>"
 # "none" is the safe default for plain browser downloads.
 # "zrip" is allowed when the client can decode it.
 compression = "none"
+# Client-side zrip level policy, served to the browser as libfw-client's
+# `compressLevel` option (only meaningful when compression = "zrip").
+#   "fast"     - advertised minimum (least CPU, worst ratio)
+#   "balanced" - advertised default
+#   "max"      - advertised maximum (best ratio)
+#   <number>   - that zrip level, clamped into the advertised range
+#   "auto"     - additionally micro-benchmarks a real sample of the first
+#                uploaded file (requires auto_tune = true)
+compress_level = "balanced"
 # Upper bound for a single upload request body in bytes.
 max_upload_size = 107374182400
 # Browser-side libfw-client tuning values. These are served by /config.js so the
@@ -75,5 +84,12 @@ timeout_ms = 600000
 # When enabled, libfw-client may auto-tune from real transfer stats and persist
 # the result for tune_ttl_ms. The static values above remain the starting point.
 auto_tune = false
+# Chunk-size ceiling (bytes) advertised to the adaptive engine while
+# auto_tune is on. The engine sizes every request from the measured link
+# (~100 ms of throughput) clamped into [64 KiB, this]; raise it so a wide/fast
+# link can use fewer, bigger requests. Values above 16 MiB have no effect (the
+# SDK caps them). Ignored when auto_tune = false.
+auto_tune_max_chunk_size = 8388608
 # Cache lifetime for settled auto-tuning results, in milliseconds.
+# 0 disables the cache entirely (every transfer re-ramps).
 tune_ttl_ms = 3600000

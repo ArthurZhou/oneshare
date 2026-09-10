@@ -33,11 +33,15 @@
   const served = (typeof window.ONESHARE_LIBFW === 'object' && window.ONESHARE_LIBFW) || {};
   const opts = {
     compress: served.compress !== false,
+    // zrip level policy when compression is on (libfw-client >= 0.4.4):
+    // 'auto' | 'fast' | 'balanced' | 'max' | <number>. 'auto' additionally
+    // micro-benchmarks the advertised range against a real sample of the
+    // first uploaded file (only while autoTune is on).
+    compressLevel: served.compressLevel != null ? served.compressLevel : 'balanced',
     concurrency: typeof served.concurrency === 'number' ? served.concurrency : 4,
+    // Shared chunk size for upload chunks AND parallel download byte ranges
+    // (libfw-client >= 0.4.4 dropped the separate `downloadChunkSize` option).
     chunkSize: typeof served.chunkSize === 'number' ? served.chunkSize : 2 * 1024 * 1024,
-    downloadChunkSize: typeof served.downloadChunkSize === 'number'
-      ? served.downloadChunkSize
-      : (typeof served.chunkSize === 'number' ? served.chunkSize : 2 * 1024 * 1024),
     // Per-file scheduling window (parallel chunks in flight per file).
     // Total in-flight chunks ≈ concurrency × uploadWindow; defaults to
     // concurrency so uploads stay bounded by the configured knob.
@@ -58,12 +62,16 @@
     // longer than it. Keep the fallback generous (10 min) so it never kills
     // active transfers.
     timeoutMs: typeof served.timeoutMs === 'number' ? served.timeoutMs : 600000,
-    // Adaptive tuning (libfw-client >= 0.3.3): when enabled the engine probes
-    // the server's public /capabilities advertisement and TCP-style ramps
-    // concurrency / windows / chunk sizes from real transfer stats, persisting
-    // a settled result per origin for tuneTtlMs. The static knobs above are
-    // the starting/minimum values. Tuning updates arrive as
-    // `{ type: 'tuning', phase, params, stats }` events.
+    // Adaptive tuning (libfw-client >= 0.4.4): when enabled the engine probes
+    // the server's public /capabilities advertisement and TCP-style ramps the
+    // per-file window, then cross-file concurrency, from real transfer stats.
+    // The chunk size is not ramped — it follows the measured link (~100 ms of
+    // throughput, clamped into the advertised range, see
+    // `auto_tune_max_chunk_size` on the server) — and the zrip level is the
+    // `compressLevel` policy above. A settle is reused by later transfers and
+    // cached per origin + direction for tuneTtlMs, so a page reload skips the
+    // ramp. Tuning updates arrive as `{ type: 'tuning', phase, params, stats }`
+    // events.
     autoTune: served.autoTune === true,
     tuneTtlMs: typeof served.tuneTtlMs === 'number' ? served.tuneTtlMs : 3600000,
   };
@@ -99,8 +107,6 @@
       maybeSet('downloadWindow', getDefault('downloadWindow') ?? opts.downloadWindow);
       // chunkSize may be the unified knob; use it first.
       maybeSet('chunkSize', getDefault('chunkSize') ?? opts.chunkSize);
-      // downloadChunkSize fallback: prefer its default if present.
-      maybeSet('downloadChunkSize', getDefault('downloadChunkSize') ?? opts.downloadChunkSize);
 
       // Scalar knobs
       if (limits.maxRetries != null && typeof limits.maxRetries === 'number') {
@@ -224,8 +230,8 @@
           baseUrl: base,
           concurrency: opts.concurrency,
           compress: opts.compress,
+          compressLevel: opts.compressLevel,
           chunkSize: opts.chunkSize,
-          downloadChunkSize: opts.downloadChunkSize,
           uploadWindow: opts.uploadWindow,
           downloadWindow: opts.downloadWindow,
           maxRetries: opts.maxRetries,

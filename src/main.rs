@@ -382,6 +382,23 @@ struct CapabilitiesRewrite<S> {
     auto_tune: bool,
 }
 
+/// The chunk-size ceiling advertised to the adaptive engine.
+///
+/// libfw-client >= 0.4.4 does not ramp the chunk size: with `auto_tune` it
+/// derives every request from the measured link (~100 ms of throughput) and
+/// clamps the result into the advertised range, so the advertised `max` *is*
+/// the ceiling a fast link may reach. That ceiling therefore comes from the
+/// dedicated `auto_tune_max_chunk_size` (never below the fixed `chunk_size`,
+/// which stays the floor). With `auto_tune` off the fixed `chunk_size` is
+/// advertised as min, default and max alike.
+fn chunk_size_ceiling(cfg: &crate::config::LibfwConfig) -> u64 {
+    if cfg.auto_tune {
+        cfg.auto_tune_max_chunk_size.max(cfg.chunk_size).max(1)
+    } else {
+        cfg.chunk_size.max(1)
+    }
+}
+
 impl<S> CapabilitiesRewrite<S> {
     fn new(inner: S, cfg: &crate::config::LibfwConfig) -> Self {
         Self {
@@ -391,7 +408,7 @@ impl<S> CapabilitiesRewrite<S> {
             max_concurrency: cfg.concurrency.max(1),
             max_upload_window: cfg.upload_window.max(1),
             max_download_window: cfg.download_window.max(1),
-            max_chunk_size: cfg.chunk_size.max(1),
+            max_chunk_size: chunk_size_ceiling(cfg),
             max_max_retries: cfg.max_retries,
             max_timeout_ms: cfg.timeout_ms,
             max_upload_size: cfg.max_upload_size.max(1),
@@ -482,8 +499,8 @@ async fn rewrite_capabilities(
     range_knob(limits, "concurrency", max_concurrency as i64, 1, auto_tune);
     range_knob(limits, "uploadWindow", max_upload_window as i64, 1, auto_tune);
     range_knob(limits, "downloadWindow", max_download_window as i64, 1, auto_tune);
-    // Merge upload/download chunk-size knobs into a single `chunkSize`
-    // advertising entry. The conservative floor for chunk size is 64 KiB.
+    // Merge the upload/download chunk-size knobs into a single `chunkSize`
+    // entry (libfw-client >= 0.4.4 has one shared knob).
     range_knob(limits, "chunkSize", max_chunk_size as i64, 64 * 1024, auto_tune);
     // Remove any separate downloadChunkSize entry so the frontend uses the
     // unified `chunkSize` config.
@@ -752,11 +769,33 @@ async fn main() {
     // tokens to shadows). Refuse to start without a valid key: an identity
     // fallback would silently leak real paths, which is what the codec
     // exists to prevent.
+    // A misconfigured zrip level policy is only a client-side hint, so it must
+    // not be fatal: warn and let `config.js` fall back to "balanced" (the same
+    // fallback libfw-client applies to an unknown `compressLevel`).
+    if !config.libfw.compress_level_is_valid() {
+        tracing::warn!(
+            "[libfw] compress_level {:?} is not one of auto|fast|balanced|max|<number>; \
+             falling back to \"balanced\"",
+            config.libfw.compress_level
+        );
+    }
+    // The level only steers the SDK while the server actually serves zrip:
+    // with compression off the SDK's `compress` master switch sends identity
+    // bodies regardless of the level policy.
+    if config.libfw.compression_format() != libfw_core::compress::CompressionFormat::Zrip
+        && !config.libfw.compress_level.trim().eq_ignore_ascii_case("balanced")
+    {
+        tracing::warn!(
+            "[libfw] compress_level = {:?} has no effect while compression = {:?}",
+            config.libfw.compress_level,
+            config.libfw.compression
+        );
+    }
+
     let codec = config
         .libfw
         .path_codec()
         .unwrap_or_else(|e| panic!("invalid libfw path codec config: {e}"));
-
     let libfw_state = Arc::new(
         ServerState::builder()
             .storage(FsStorage::new(config.root_dir()))
@@ -823,12 +862,15 @@ async fn main() {
         });
     }
 
-    // libfw 0.3.4 ships a built-in stale session-temp sweeper
+    // libfw ships a built-in stale session-temp sweeper
     // (`spawn_stale_session_cleanup`): the concurrent upload protocol leaves a
-    // `.libfw-sess-*` temp (plus a `.blocks` sidecar) behind whenever a
-    // browser dies mid-upload, and the sweeper removes ones whose last write
-    // is older than the TTL — never committed user files. Defaults: 1h sweep
-    // interval, 24h TTL.
+    // `.libfw-sess-*` temp (plus a `.blocks` sidecar and its `.blocks.tmp`
+    // rename sibling) behind whenever a browser dies mid-upload, and the
+    // sweeper removes ones whose last write is older than the TTL — never
+    // committed user files. Defaults: 1h sweep interval, 24h TTL.
+    // Since 0.4.4 a client that disconnects mid-chunk KEEPS its temp + sidecar
+    // (so a page refresh resumes instead of restarting), which is exactly what
+    // this sweeper is for; `DirListingFilter` keeps them out of listings.
     libfw_state.spawn_stale_session_cleanup();
 
     let libfw_app = libfw_router(libfw_state);
@@ -991,6 +1033,68 @@ mod tests {
             .header(axum::http::header::CONTENT_TYPE, "application/json")
             .body(Body::from(json))
             .unwrap()
+    }
+
+    #[test]
+    fn compress_level_json_maps_policies_and_numbers() {
+        let cfg = |raw: &str| crate::config::LibfwConfig {
+            compress_level: raw.to_string(),
+            ..crate::config::LibfwConfig::default()
+        };
+        // Named policies are normalised to lowercase for the SDK.
+        assert_eq!(cfg("max").compress_level_json(), serde_json::json!("max"));
+        assert_eq!(cfg(" FAST ").compress_level_json(), serde_json::json!("fast"));
+        assert_eq!(cfg("auto").compress_level_json(), serde_json::json!("auto"));
+        // A bare number is an explicit zrip level.
+        assert_eq!(cfg("3").compress_level_json(), serde_json::json!(3));
+        assert_eq!(cfg("-8").compress_level_json(), serde_json::json!(-8));
+        // Junk falls back to the SDK's own default and is flagged invalid.
+        assert_eq!(
+            cfg("turbo").compress_level_json(),
+            serde_json::json!("balanced")
+        );
+        assert!(!cfg("turbo").compress_level_is_valid());
+        assert!(cfg("auto").compress_level_is_valid());
+        assert!(cfg("-8").compress_level_is_valid());
+    }
+
+    /// With adaptive tuning the advertised chunk-size ceiling is the dedicated
+    /// knob (never below the fixed `chunk_size`); without it the fixed value is
+    /// advertised as min, default and max alike.
+    #[test]
+    fn chunk_size_ceiling_follows_auto_tune() {
+        let fixed = crate::config::LibfwConfig {
+            chunk_size: 2 * 1024 * 1024,
+            ..crate::config::LibfwConfig::default()
+        };
+        assert_eq!(chunk_size_ceiling(&fixed), 2 * 1024 * 1024);
+
+        let tuned = crate::config::LibfwConfig {
+            auto_tune: true,
+            chunk_size: 2 * 1024 * 1024,
+            auto_tune_max_chunk_size: 8 * 1024 * 1024,
+            ..crate::config::LibfwConfig::default()
+        };
+        assert_eq!(chunk_size_ceiling(&tuned), 8 * 1024 * 1024);
+
+        // A ceiling below the fixed chunk size must never shrink the ceiling
+        // the ramp starts from.
+        let small = crate::config::LibfwConfig {
+            auto_tune: true,
+            chunk_size: 4 * 1024 * 1024,
+            auto_tune_max_chunk_size: 1024 * 1024,
+            ..crate::config::LibfwConfig::default()
+        };
+        assert_eq!(chunk_size_ceiling(&small), 4 * 1024 * 1024);
+
+        // `auto_tune_max_chunk_size` is inert while tuning is off.
+        let off = crate::config::LibfwConfig {
+            auto_tune: false,
+            chunk_size: 1024 * 1024,
+            auto_tune_max_chunk_size: 16 * 1024 * 1024,
+            ..crate::config::LibfwConfig::default()
+        };
+        assert_eq!(chunk_size_ceiling(&off), 1024 * 1024);
     }
 
     /// The rewrite keeps a fixed safe floor for the ramping engine, removes the

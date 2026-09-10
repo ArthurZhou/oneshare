@@ -22,7 +22,8 @@ pub struct Config {
 ///   SDK from the backend instead of hard-coding them.
 ///
 /// `compress` (client) mirrors `compression` (server): the SDK only negotiates
-/// zrip compression when the server actually serves it.
+/// zrip compression when the server actually serves it, and `compress_level`
+/// picks the zrip level policy within the range the server advertises.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LibfwConfig {
     /// Download compression for the embedded server: `"zrip"` (the SDK can
@@ -31,14 +32,32 @@ pub struct LibfwConfig {
     /// bytes). Values are parsed like libfw's `x-libfw-compress` header
     /// (`zrip`/`zstd`/`identity`/`none`).
     #[serde(default = "default_compression")]
-    pub compression: String,
-    /// Upper bound for a single upload body in bytes (default 100 GiB).
+    pub compression: String,    /// Client SDK: zrip compression-level policy (default `"balanced"`).
+    ///
+    /// Served to the browser as `libfw-client`'s `compressLevel` option, which
+    /// clamps it into the zrip range the server advertises on
+    /// `/capabilities`:
+    /// - `"fast"` — the advertised minimum (least CPU, worst ratio)
+    /// - `"balanced"` — the advertised default
+    /// - `"max"` — the advertised maximum (best ratio)
+    /// - a bare integer — that level, clamped into the advertised range
+    /// - `"auto"` — additionally micro-benchmarks a real sample of the first
+    ///   uploaded file against the range and picks the best
+    ///   bytes-saved-vs-CPU trade-off (requires `auto_tune = true`).
+    ///
+    /// An unrecognised value falls back to `"balanced"` (with a startup
+    /// warning). Only meaningful with `compression = "zrip"`: the SDK's
+    /// `compress` master switch sends plain identity bodies otherwise.
+    #[serde(default = "default_compress_level", deserialize_with = "de_string_or_int")]
+    pub compress_level: String,    /// Upper bound for a single upload body in bytes (default 100 GiB).
     #[serde(default = "default_max_upload_size")]
     pub max_upload_size: u64,
     /// Client SDK: max parallel file transfers (default 4).
     #[serde(default = "default_concurrency")]
     pub concurrency: u32,
-    /// Client SDK: upload chunk size in bytes (default 2 MiB).
+    /// Client SDK: shared chunk size in bytes for upload chunks and
+    /// parallel download byte ranges (default 2 MiB). libfw-client 0.4.4
+    /// unified the former upload/download chunk-size knobs into this one.
     #[serde(default = "default_chunk_size")]
     pub chunk_size: u64,
     /// Client SDK: per-file scheduling window — how many chunks of the same
@@ -80,16 +99,35 @@ pub struct LibfwConfig {
     /// Client SDK: enable the adaptive tuning engine (default false).
     ///
     /// When enabled the browser probes the server's public `GET /capabilities`
-    /// advertisement and TCP-style ramps concurrency / windows / chunk sizes
-    /// (and the zrip level) from real transfer stats, persisting a settled
-    /// result per origin (`tune_ttl_ms`). Static knobs above act as the
+    /// advertisement and TCP-style ramps the per-file window, then cross-file
+    /// concurrency, from real transfer stats. The chunk size is not ramped: it
+    /// follows the measured link (~100 ms of throughput, clamped into the
+    /// advertised range), and the zrip level is a client policy resolved from
+    /// the server's advertised levels. Static knobs above act as the
     /// starting/minimum values. Disabled by default so transfers behave
     /// exactly as configured.
     #[serde(default)]
     pub auto_tune: bool,
-    /// Client SDK: how long a settled tuning result is reused for the same
-    /// server origin before re-ramping, in ms (default 1 h). Only meaningful
-    /// with `auto_tune = true`.
+    /// Client SDK: chunk-size ceiling advertised to the adaptive engine, in
+    /// bytes (default 8 MiB). Only used with `auto_tune = true`.
+    ///
+    /// With adaptive tuning the SDK does not ramp the chunk size — it sizes
+    /// every request from the *measured* link (~100 ms of throughput) — so the
+    /// advertised range becomes `[64 KiB, this ceiling]` and `chunk_size` stops
+    /// acting as the ceiling. Raising it lets a wide/fast link use fewer,
+    /// bigger requests; the SDK enforces its own hard cap (16 MiB) and an
+    /// in-flight memory budget regardless, so values above 16 MiB have no
+    /// effect. Ignored when `auto_tune = false` (the fixed `chunk_size` is then
+    /// advertised as min, default and max alike).
+    #[serde(default = "default_auto_tune_max_chunk_size")]
+    pub auto_tune_max_chunk_size: u64,
+    /// Client SDK: how long a settled tuning result stays usable, in ms
+    /// (default 1 h).
+    ///
+    /// The browser caches a settle per origin *and* direction, so a page
+    /// reload skips the ramp; the TTL counts from the moment the ramp settled.
+    /// `0` disables the cache entirely (every transfer re-ramps). Only
+    /// meaningful with `auto_tune = true`.
     #[serde(default = "default_tune_ttl_ms")]
     pub tune_ttl_ms: u64,
     /// AES-256 key (64 hex chars = 32 bytes) for libfw's `EncryptedPathCodec`.
@@ -110,6 +148,7 @@ impl Default for LibfwConfig {
     fn default() -> Self {
         LibfwConfig {
             compression: default_compression(),
+            compress_level: default_compress_level(),
             max_upload_size: default_max_upload_size(),
             concurrency: default_concurrency(),
             chunk_size: default_chunk_size(),
@@ -120,6 +159,7 @@ impl Default for LibfwConfig {
             max_retry_delay_ms: default_max_retry_delay_ms(),
             timeout_ms: default_timeout_ms(),
             auto_tune: false,
+            auto_tune_max_chunk_size: default_auto_tune_max_chunk_size(),
             tune_ttl_ms: default_tune_ttl_ms(),
             path_key: String::new(),
         }
@@ -128,6 +168,46 @@ impl Default for LibfwConfig {
 
 fn default_compression() -> String {
     "none".to_string()
+}
+fn default_compress_level() -> String {
+    "balanced".to_string()
+}
+fn default_auto_tune_max_chunk_size() -> u64 {
+    8 * 1024 * 1024 // 8 MiB — a fast link's "~100 ms of throughput" budget
+}
+
+/// Accept `compress_level = "balanced"` (string) as well as a bare integer
+/// (`compress_level = 3`), normalising both to one string.
+///
+/// A `Visitor` rather than an untagged enum: it accepts whatever type TOML
+/// actually parsed instead of buffering the value through `Content`.
+fn de_string_or_int<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct StringOrInt;
+
+    impl serde::de::Visitor<'_> for StringOrInt {
+        type Value = String;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("a zrip level policy name or a numeric level")
+        }
+
+        fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<String, E> {
+            Ok(v.to_string())
+        }
+
+        fn visit_i64<E: serde::de::Error>(self, v: i64) -> Result<String, E> {
+            Ok(v.to_string())
+        }
+
+        fn visit_u64<E: serde::de::Error>(self, v: u64) -> Result<String, E> {
+            Ok(v.to_string())
+        }
+    }
+
+    deserializer.deserialize_any(StringOrInt)
 }
 fn default_max_upload_size() -> u64 {
     100 * 1024 * 1024 * 1024 // 100 GiB, matches libfw's DEFAULT_MAX_UPLOAD_SIZE
@@ -167,6 +247,21 @@ impl LibfwConfig {
         CompressionFormat::parse_header(&self.compression).unwrap_or(CompressionFormat::None)
     }
 
+    /// Whether `compress_level` is a policy libfw-client understands
+    /// (`auto`/`fast`/`balanced`/`max`) or a numeric zrip level.
+    pub fn compress_level_is_valid(&self) -> bool {
+        compress_level_json(self.compress_level.trim()).is_some()
+    }
+
+    /// The `compressLevel` value served to the browser: a named policy, a
+    /// numeric level, or `"balanced"` when the configured value is not
+    /// recognised (libfw-client falls back to the same default, so this only
+    /// keeps `config.js` well-formed instead of shipping junk).
+    pub fn compress_level_json(&self) -> serde_json::Value {
+        compress_level_json(self.compress_level.trim())
+            .unwrap_or_else(|| serde_json::Value::String("balanced".to_string()))
+    }
+
     /// Build libfw's `EncryptedPathCodec` from `path_key`.
     ///
     /// Fails (rather than silently falling back to identity) when the key is
@@ -176,6 +271,68 @@ impl LibfwConfig {
     pub fn path_codec(&self) -> Result<libfw_core::pathmap::EncryptedPathCodec, String> {
         libfw_core::pathmap::EncryptedPathCodec::from_hex(&self.path_key)
             .map_err(|e| format!("[libfw] path_key: {e}"))
+    }
+}
+
+/// Map a `compress_level` string to the JSON value `config.js` serves: the
+/// lowercase policy name, a numeric zrip level, or `None` when unparseable.
+fn compress_level_json(raw: &str) -> Option<serde_json::Value> {
+    let lower = raw.to_ascii_lowercase();
+    if matches!(lower.as_str(), "auto" | "fast" | "balanced" | "max") {
+        return Some(serde_json::Value::String(lower));
+    }
+    raw.parse::<i32>().ok().map(|level| serde_json::json!(level))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Stand-in for the real `Config`: only the `[libfw]` table matters here.
+    #[derive(Deserialize)]
+    struct Wrapper {
+        #[serde(default)]
+        libfw: LibfwConfig,
+    }
+
+    fn parse(toml_src: &str) -> LibfwConfig {
+        toml::from_str::<Wrapper>(toml_src).unwrap().libfw
+    }
+
+    #[test]
+    fn defaults_apply_without_a_libfw_table() {
+        let cfg = parse("");
+        assert_eq!(cfg.compress_level, "balanced");
+        assert_eq!(cfg.auto_tune_max_chunk_size, 8 * 1024 * 1024);
+        assert!(!cfg.auto_tune);
+        assert_eq!(cfg.compress_level_json(), serde_json::json!("balanced"));
+    }
+
+    #[test]
+    fn compress_level_accepts_a_policy_name_or_a_bare_integer() {
+        // Quoted policy names are normalised to lowercase for the SDK.
+        let named = parse("[libfw]\ncompress_level = \"MAX\"\n");
+        assert_eq!(named.compress_level_json(), serde_json::json!("max"));
+        assert!(named.compress_level_is_valid());
+
+        // An unquoted integer is an explicit zrip level (and must not fail the
+        // whole config parse).
+        let numeric = parse("[libfw]\ncompress_level = -8\n");
+        assert_eq!(numeric.compress_level_json(), serde_json::json!(-8));
+        assert!(numeric.compress_level_is_valid());
+
+        // Junk falls back to the SDK's own default instead of breaking
+        // `config.js`.
+        let junk = parse("[libfw]\ncompress_level = \"turbo\"\n");
+        assert_eq!(junk.compress_level_json(), serde_json::json!("balanced"));
+        assert!(!junk.compress_level_is_valid());
+    }
+
+    #[test]
+    fn auto_tune_chunk_ceiling_is_parsed() {
+        let cfg = parse("[libfw]\nauto_tune = true\nauto_tune_max_chunk_size = 4194304\n");
+        assert!(cfg.auto_tune);
+        assert_eq!(cfg.auto_tune_max_chunk_size, 4 * 1024 * 1024);
     }
 }
 
