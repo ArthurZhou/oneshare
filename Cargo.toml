@@ -1,6 +1,6 @@
 [package]
 name = "oneshare"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 
 [dependencies]
@@ -30,8 +30,8 @@ ring = "0.17"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 mime_guess = "2"
-libfw-core = { version = "0.4.4", features = ["path-encrypt"] }
-libfw-server = { version = "0.4.4", features = ["path-encrypt"] }
+libfw-core = { version = "0.4.5", features = ["path-encrypt"] }
+libfw-server = { version = "0.4.5", features = ["path-encrypt"] }
 # reqwest uses rustls for TLS. We supply the crypto provider ourselves: use
 # `rustls-no-provider` + a direct `rustls` dep on `ring` instead of the default
 # `aws-lc-rs`, so the build needs only a C compiler + perl (no cmake).

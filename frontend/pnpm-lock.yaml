@@ -9,8 +9,8 @@ importers:
   .:
     dependencies:
       libfw-client:
-        specifier: 0.4.4
-        version: 0.4.4
+        specifier: 0.4.5
+        version: 0.4.5
     devDependencies:
       esbuild:
         specifier: ^0.28.0
@@ -397,14 +397,14 @@ packages:
     engines: {node: ^14.13.1 || >=16.0.0}
     hasBin: true
 
-  libfw-client@0.4.4:
-    resolution: {integrity: sha512-cBU9NZlxQwbH4vsLXVE7zTqSfihfE57VVOBh4MEyASa3mSktibivYtGH7NfbLRUtOD9JNWJKmet2KNpt3B1uFw==}
+  libfw-client@0.4.5:
+    resolution: {integrity: sha512-jXDpY+qSPJulL7Yt09MpM2TD4ELaiaip/3NezwnZb1FUA6/FRFadNh4gBXAZ+jqNUm/tH4hZ76LY+gMbY3DGMw==}
 
   lower-case@2.0.2:
     resolution: {integrity: sha512-7fm3l3NAF9WfN6W3JOmf5drwpVqX78JtoGJ3A6W0a6ZnldM41w2fV5D490psKFTpMds8TJse/eHLFFsNHHjHgg==}
 
-  nanoid@3.3.18:
-    resolution: {integrity: sha512-DTg4MJbGMWkfi6VZFdNt2/caMbQy4Ou+Op/hJQvGEWcnVfoA1QA+xzRKAzw9jD6+GVOOeYr/mIcuDSdug6F6+w==}
+  nanoid@3.3.19:
+    resolution: {integrity: sha512-Y2tUNy4ouw6tq5oDSKeQYGOyhkUBhNOcGV/02KC+6kd9eDGqdZd++mjMiIDilrBYvjEnCYvVtsuHCuP+okSfug==}
     engines: {node: ^10 || ^12 || ^13.7 || ^14 || >=15.0.1}
     hasBin: true
 
@@ -752,13 +752,13 @@ snapshots:
       relateurl: 0.2.7
       terser: 5.51.2
 
-  libfw-client@0.4.4: {}
+  libfw-client@0.4.5: {}
 
   lower-case@2.0.2:
     dependencies:
       tslib: 2.8.1
 
-  nanoid@3.3.18: {}
+  nanoid@3.3.19: {}
 
   no-case@3.0.4:
     dependencies:
@@ -781,7 +781,7 @@ snapshots:
 
   postcss@8.5.28:
     dependencies:
-      nanoid: 3.3.18
+      nanoid: 3.3.19
       picocolors: 1.1.1
       source-map-js: 1.2.1
 

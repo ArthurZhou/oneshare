@@ -72,6 +72,13 @@ const API = {
 
   // ── libfw Token ──
   getToken: (path, op = 'read') => API.fetch(`/api/files/token?path=${encodeURIComponent(path)}&op=${op}`),
+  // Recursive byte size of a path (a file's own size), used by the download
+  // pre-flight on browsers without the File System Access API. `limit` lets
+  // the server stop walking as soon as the total passes it, so an oversized
+  // tree is rejected without traversing all of it.
+  getPathSize: (path, limit) => API.fetch(
+    `/api/files/size?path=${encodeURIComponent(path)}`
+    + (limit > 0 ? `&limit=${limit}` : '')),
 
   // ── Share links（分享）──
   // items: one path for a single share, or several paths for a multi-item

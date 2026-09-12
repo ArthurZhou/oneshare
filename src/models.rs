@@ -34,6 +34,28 @@ pub struct ListQuery {
     pub path: Option<String>,
 }
 
+/// Query for `GET /api/files/size` (recursive size, used by the download
+/// pre-flight on browsers without the File System Access API).
+#[derive(Debug, Deserialize)]
+pub struct SizeQuery {
+    pub path: String,
+    /// Give up (and report `exceeded`) once the total passes this many bytes,
+    /// so probing a wildly oversized tree costs only a partial walk. `None`
+    /// walks everything.
+    #[serde(default)]
+    pub limit: Option<u64>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SizeResponse {
+    /// Bytes of every readable, non-hidden file under `path`; the file's own
+    /// size when `path` names a file.
+    pub size: u64,
+    /// `true` when the walk stopped early because `size > limit` — `size` is
+    /// then only a lower bound.
+    pub exceeded: bool,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct FileOperation {
     pub path: String,

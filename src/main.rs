@@ -169,6 +169,7 @@ impl Service<Request<Body>> for ShareProxy {
                         | "files/names"
                         | "files/raw"
                         | "files/content"
+                        | "files/size"
                 ),
                 "file" | "dir" | "capabilities" | "config.js" | "js" | "css" | "vendor" => true,
                 _ => false,
@@ -791,6 +792,17 @@ async fn main() {
             config.libfw.compression
         );
     }
+    // `max_fallback_bytes = 0` means "no limit" to libfw-client, which would
+    // disable the only guard against an out-of-memory fallback download on
+    // browsers without the File System Access API. The default is served
+    // instead — say so loudly rather than silently ignoring the setting.
+    if config.libfw.max_fallback_bytes == 0 {
+        tracing::warn!(
+            "[libfw] max_fallback_bytes = 0 disables the browser download-memory \
+             limit; using the default of {} bytes instead",
+            config.libfw.effective_max_fallback_bytes()
+        );
+    }
 
     let codec = config
         .libfw
@@ -908,6 +920,9 @@ async fn main() {
         .route("/api/files/mkdir", post(api::files::mkdir))
         .route("/api/files/token", get(api::files::get_token))
         .route("/api/files/names", get(api::files::get_names))
+        // Recursive size of a path, for the download pre-flight on browsers
+        // without the File System Access API (see `api::files::size`).
+        .route("/api/files/size", get(api::files::size))
         // Inline preview / online text editing. The PUT body is JSON-wrapped
         // text, so raise axum's 2 MiB default body limit on this route to
         // cover the 1 MiB text limit with worst-case JSON escaping.

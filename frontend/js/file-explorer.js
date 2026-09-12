@@ -233,7 +233,7 @@ function renderFiles(data) {
     const cls = entry.is_dir ? 'file-row dir' : 'file-row';
     const sel = selectedPaths.has(entry.path);
     html += `
-      <div class="${cls}${sel ? ' selected' : ''}" data-path="${escapeHtml(entry.path)}" data-name="${escapeHtml(entry.name)}" data-is-dir="${entry.is_dir}" data-idx="${idx}">
+      <div class="${cls}${sel ? ' selected' : ''}" data-path="${escapeHtml(entry.path)}" data-name="${escapeHtml(entry.name)}" data-is-dir="${entry.is_dir}" data-size="${entry.is_dir ? '' : entry.size}" data-idx="${idx}">
         <div class="file-check" data-check title="选择">${iconSvg(sel ? 'check-square' : 'square')}</div>
         <div class="file-icon">${icon}</div>
         <div class="file-name" title="${escapeHtml(entry.name)}">${escapeHtml(entry.name)}</div>
@@ -302,7 +302,8 @@ function renderFiles(data) {
       if (row.dataset.isDir === 'true') {
         downloadFolder(row.dataset.path, row.dataset.name);
       } else {
-        downloadFile(row.dataset.path, row.dataset.name);
+        // `data-size` lets the fallback guard run without a server probe.
+        downloadFile(row.dataset.path, row.dataset.name, Number(row.dataset.size));
       }
     });
   });
@@ -361,7 +362,13 @@ function renderFiles(data) {
 }
 
 function openContextMenuAt(x, y, row) {
-  selectedFile = { path: row.dataset.path, name: row.dataset.name, isDir: row.dataset.isDir === 'true' };
+  selectedFile = {
+    path: row.dataset.path,
+    name: row.dataset.name,
+    isDir: row.dataset.isDir === 'true',
+    // Empty for directories (their `FileEntry.size` is not a recursive sum).
+    size: row.dataset.size === '' ? undefined : Number(row.dataset.size),
+  };
   showContextMenu(x, y, selectedFile);
 }
 
@@ -472,8 +479,26 @@ async function downloadSelected() {
     // Single selection keeps the plain single-task semantics.
     const it = items[0];
     if (it.isDir) downloadFolder(it.path, it.name);
-    else downloadFile(it.path, it.name);
+    else downloadFile(it.path, it.name, it.size);
     return;
+  }
+  // Without the FS API each item is buffered in memory in turn, so the cap
+  // applies to the BATCH, not per item — the SDK only ever sees one transfer
+  // at a time and resets its budget for each of them. Sum the batch up front
+  // and refuse it as a whole.
+  const limit = fallbackLimit();
+  if (limit > 0) {
+    try {
+      let total = 0;
+      for (const it of items) {
+        const bytes = await fallbackBytes(it.path, it.isDir ? NaN : it.size, limit - total);
+        ensureFallbackFits(bytes, total);
+        total += Number.isFinite(bytes) ? bytes : 0;
+      }
+    } catch (e) {
+      alert(e.message);
+      return;
+    }
   }
   const t = { kind: 'download', name: `${items.length} 项`, total: 0, done: 0, status: 'active', error: null };
   addTransfer(t);
@@ -703,7 +728,7 @@ async function handleContextAction(action, file) {
   switch (action) {
     case 'download':
       if (file.isDir) await downloadFolder(file.path, file.name);
-      else await downloadFile(file.path, file.name);
+      else await downloadFile(file.path, file.name, file.size);
       break;
     case 'share':
       showShareModal([file]);
@@ -988,11 +1013,17 @@ function applyTransferProgress(t, ev) {
 
 function finalizeTransferError(t, e, override = {}) {
   const cancelled = e && (e.code === 'cancelled' || e.code === 'abort' || e.name === 'AbortError');
+  // The SDK's own `too-large` cap can still trip mid-transfer — the up-front
+  // check misses when a size changed since the listing, or when the size probe
+  // failed — so word it like the pre-flight does.
+  const tooLarge = !cancelled && !!(e && e.code === 'too-large');
   updateTransfer(t.id, {
     status: cancelled ? 'cancelled' : 'error',
     done: override.done ?? t.done,
     total: override.total ?? t.total,
-    error: cancelled ? '' : (e && e.message) || String(e),
+    error: cancelled ? '' : (tooLarge
+      ? fallbackLimitMessage(Number(override.total ?? t.total) || 0, fallbackLimit())
+      : (e && e.message) || String(e)),
     finalizing: false,
   });
 }
@@ -1065,15 +1096,77 @@ async function runUploadTask(t, destPath, token, dirShadow, items) {
 // the File System Access API it streams into a user-picked directory;
 // without it (`downloadMode: 'auto'`) single files are saved via a normal
 // browser download and folders are packed into a `.zip` and downloaded — no
-// feature detection needed here.
+// feature detection needed here apart from the size guard below.
 
-function downloadFile(path, name) {
+// ── Browser-fallback size guard ──
+//
+// Without the File System Access API the SDK cannot stream to disk: it
+// buffers a whole transfer in memory and only then saves it. libfw-client
+// refuses anything above `maxFallbackBytes`, but only once the transfer is
+// already running — and for a folder only when the running total crosses the
+// cap — so a doomed download burns its bandwidth first (and a folder produces
+// no file at all). These helpers reject it up front instead, using the same
+// cap the SDK applies (`[libfw] max_fallback_bytes`).
+
+// The fallback cap that applies in THIS browser: 0 with the FS API, where
+// transfers stream to disk and nothing is buffered in memory.
+function fallbackLimit() {
+  return Libfw.supportsFsAccess() ? 0 : Libfw.fallbackLimit();
+}
+
+// Message for a download that cannot fit the fallback buffer. `total` is the
+// size that overflowed (`0` when only the cap is known) and `limit` the cap.
+function fallbackLimitMessage(total, limit) {
+  const size = total > 0 ? `本次约 ${formatSize(total)}，` : '';
+  return '当前浏览器不支持边下载边写入磁盘，需先在内存中缓存后下载：'
+    + `${size}超过上限 ${formatSize(limit)}。`
+    + '请改用 Chrome / Edge 等支持文件系统访问的浏览器，或分批下载。';
+}
+
+// Bytes `path` will occupy in the fallback buffer: the size from the listing
+// for a plain file, or the server's recursive size for a folder (`limit`
+// short-circuits that walk). `NaN` when unknown — the transfer then starts
+// and the SDK's own cap backstops it.
+async function fallbackBytes(path, knownSize, limit) {
+  if (Number.isFinite(knownSize)) return knownSize;
+  try {
+    const res = await API.getPathSize(path, limit);
+    if (res && Number.isFinite(res.size)) return res.size;
+  } catch (e) { /* a failed probe must not block the download */ }
+  return NaN;
+}
+
+// Throw when `bytes` — plus `already` bytes buffered by earlier items of the
+// same batch — does not fit the browser's in-memory fallback.
+function ensureFallbackFits(bytes, already = 0) {
+  const limit = fallbackLimit();
+  if (limit <= 0 || !Number.isFinite(bytes)) return;
+  const total = already + bytes;
+  if (total > limit) throw new Error(fallbackLimitMessage(total, limit));
+}
+
+// Guard for one download. Call ONLY when `fallbackLimit() > 0`: with the FS
+// API nothing is buffered, and probing the size would put an awaited request in
+// front of the directory picker, which must stay in the click's user gesture.
+async function guardFallbackSize(path, knownSize) {
+  const limit = fallbackLimit();
+  if (limit <= 0) return;
+  ensureFallbackFits(await fallbackBytes(path, knownSize, limit));
+}
+
+function downloadFile(path, name, size) {
   (async () => {
+    // Size guard first: it must reject an oversized fallback download before a
+    // token is fetched (and before the picker opens) — see the helpers above.
+    await guardFallbackSize(path, size);
     // File System Access requires a live user gesture when the picker opens.
     // Ask for the directory before any awaited token fetch so the browser keeps
     // the activation alive; otherwise the SDK may throw SecurityError and fall
-    // back to a raw, non-chunked browser download.
-    await Libfw.ensureDirectoryHandle();
+    // back to a raw, non-chunked browser download. On browsers WITHOUT the FS
+    // API there is no picker to pre-warm: the SDK itself saves those downloads
+    // (single file via a normal browser download, folder as an uncompressed
+    // `.zip`), so skip it and let that fallback run.
+    if (Libfw.supportsFsAccess()) await Libfw.ensureDirectoryHandle();
     const tokenResp = await API.getToken(path, 'read');
     const t = { kind: 'download', name, total: 0, done: 0, status: 'active', error: null };
     addTransfer(t);
@@ -1108,10 +1201,16 @@ async function runFileDownloadTask(t, path, name, token) {
 
 function downloadFolder(path, name) {
   (async () => {
+    // Size guard first (same rationale as `downloadFile`): a folder's total is
+    // only known to the server — `FileEntry.size` is the directory entry's own
+    // size, not a recursive sum.
+    await guardFallbackSize(path, undefined);
     // Keep the directory-picker call in the same user-gesture chain as the
     // click, otherwise the browser rejects it with SecurityError and the SDK
-    // may then fall back to a whole-file browser download.
-    await Libfw.ensureDirectoryHandle();
+    // may then fall back to a whole-file browser download. Skipped entirely on
+    // browsers without the FS API, where the SDK packs the tree into a `.zip`
+    // and saves it via a normal browser download (see `downloadFile`).
+    if (Libfw.supportsFsAccess()) await Libfw.ensureDirectoryHandle();
     const tokenResp = await API.getToken(path, 'read');
     const t = { kind: 'download', name, total: 0, done: 0, status: 'active', error: null };
     addTransfer(t);
@@ -1717,7 +1816,7 @@ function renderFileDetail(detail) {
     </div>`;
 
   document.getElementById('fv-back').onclick = () => navigate(currentPath);
-  document.getElementById('detail-download').onclick = () => downloadFile(detail.path, detail.name);
+  document.getElementById('detail-download').onclick = () => downloadFile(detail.path, detail.name, detail.size);
   const shareBtn = document.getElementById('detail-share');
   if (shareBtn) shareBtn.onclick = () =>
     showShareModal([{ path: detail.path, name: detail.name, isDir: false }]);

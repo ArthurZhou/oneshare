@@ -39,6 +39,11 @@ pub async fn config_js(State(state): State<Arc<AppState>>) -> impl IntoResponse 
         "chunkSize": libfw.chunk_size,
         "uploadWindow": libfw.upload_window,
         "downloadWindow": libfw.download_window,
+        // In-memory ceiling for the browser's download fallback (browsers
+        // without the File System Access API buffer a whole transfer before
+        // saving it). `0` never reaches here: it means "unlimited" to the
+        // SDK, so the config layer replaces it with the default.
+        "maxFallbackBytes": libfw.effective_max_fallback_bytes(),
         "maxRetries": libfw.max_retries,
         "baseRetryDelayMs": libfw.base_retry_delay_ms,
         "maxRetryDelayMs": libfw.max_retry_delay_ms,

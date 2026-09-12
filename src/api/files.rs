@@ -257,6 +257,109 @@ pub async fn list(
     }))
 }
 
+/// Recursive byte size of a path, for the frontend's download pre-flight.
+///
+/// Browsers WITHOUT the File System Access API cannot stream a download to
+/// disk: libfw-client buffers the whole transfer in memory and only then
+/// saves it (a single file via a normal browser download, a folder as an
+/// uncompressed `.zip`, capped by `[libfw] max_fallback_bytes`). The frontend
+/// therefore refuses an oversized download *before* starting it — but a
+/// folder's total is not in the listing (`FileEntry::size` is the directory
+/// entry's own size, not a recursive sum), so it asks the server instead of
+/// walking the tree itself.
+///
+/// The walk mirrors what a download would actually fetch: hidden (`.…`)
+/// entries are skipped (as in `build_entry` and the listing) and every entry
+/// is ACL-gated on its real path, so files the caller cannot read neither
+/// count towards the total nor get downloaded. Symlinks are never followed —
+/// they would skew the total (or loop), and the transfer layer refuses them
+/// anyway.
+///
+/// `limit` short-circuits the walk: once the total passes it the handler
+/// returns immediately with `exceeded = true`, so the common "too big" answer
+/// costs only a partial traversal.
+pub async fn size(
+    State(state): State<Arc<AppState>>,
+    jar: CookieJar,
+    Query(query): Query<SizeQuery>,
+) -> Result<Json<SizeResponse>, StatusCode> {
+    let ru = get_request_user(&jar, &state.db).await?;
+    let acl_entries = ru.acl_entries(&state.db)?;
+    // Resolves the display/real path and requires read on the target itself.
+    let start = resolve_checked(&state, &ru, &query.path, Permission::Read).await?;
+    let allow = |real: &str| {
+        acl::can_access(
+            &ru.user,
+            &ru.groups,
+            &acl_entries,
+            real,
+            &Permission::Read,
+        )
+    };
+    let (size, exceeded) = walk_size(
+        &state.config.root_dir(),
+        &start,
+        query.limit,
+        &allow,
+    );
+    Ok(Json(SizeResponse { size, exceeded }))
+}
+
+/// Recursive byte total of `start` (a real path relative to `root`), counting
+/// only files `allow` accepts.
+///
+/// Mirrors what a download would actually fetch: hidden (`.…`) entries are
+/// skipped — as in [`build_entry`] and the listing — and symlinks are never
+/// followed (they would skew the total or loop, and the transfer layer
+/// refuses them anyway). Returns `(size, exceeded)`; `limit` short-circuits
+/// the walk, so `size` is only a lower bound when `exceeded` is true.
+fn walk_size(
+    root: &std::path::Path,
+    start: &str,
+    limit: Option<u64>,
+    allow: &dyn Fn(&str) -> bool,
+) -> (u64, bool) {
+    let mut total: u64 = 0;
+    // Iterative depth-first walk of real (relative) paths: recursion would
+    // need an explicit budget to stay safe on deep trees, and a stack of
+    // strings is cheap.
+    let mut stack = vec![start.to_string()];
+    while let Some(rel) = stack.pop() {
+        // `symlink_metadata`: never follow a link, not even for the target.
+        let Ok(md) = std::fs::symlink_metadata(root.join(&rel)) else {
+            continue;
+        };
+        if md.file_type().is_symlink() {
+            continue;
+        }
+        if !md.is_dir() {
+            total = total.saturating_add(md.len());
+            if limit.is_some_and(|l| total > l) {
+                return (total, true);
+            }
+            continue;
+        }
+        let Ok(read_dir) = std::fs::read_dir(root.join(&rel)) else {
+            continue;
+        };
+        for entry in read_dir.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with('.') {
+                continue; // hidden entries (and `.libfw-tmp-*` leftovers)
+            }
+            let child = if rel.is_empty() {
+                name
+            } else {
+                format!("{rel}/{name}")
+            };
+            if allow(&child) {
+                stack.push(child);
+            }
+        }
+    }
+    (total, false)
+}
+
 /// Reject file-management operations whose target path (or any parent
 /// component under the root) contains a symlink.
 ///
@@ -1261,6 +1364,61 @@ mod tests {
         let p = std::env::temp_dir().join(format!("oneshare-{}-{}", name, std::process::id()));
         let _ = std::fs::remove_dir_all(&p);
         p
+    }
+
+    /// Build `root/` with a nested tree used by the `walk_size` tests:
+    ///
+    /// ```text
+    /// root/
+    ///   a.txt           (4 bytes)
+    ///   .hidden.txt     (99 bytes, must not count)
+    ///   sub/
+    ///     b.txt         (3 bytes)
+    ///     blocked.txt   (50 bytes, denied by the allow filter)
+    /// ```
+    fn size_fixture(name: &str) -> std::path::PathBuf {
+        let root = temp_root(name);
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        std::fs::write(root.join("a.txt"), b"aaaa").unwrap();
+        std::fs::write(root.join(".hidden.txt"), vec![b'x'; 99]).unwrap();
+        std::fs::write(root.join("sub/b.txt"), b"bbb").unwrap();
+        std::fs::write(root.join("sub/blocked.txt"), vec![b'y'; 50]).unwrap();
+        root
+    }
+
+    /// Everyone except the deliberately unreadable entry.
+    fn allow_all_but_blocked(real: &str) -> bool {
+        !real.ends_with("blocked.txt")
+    }
+
+    #[test]
+    fn walk_size_sums_the_tree_skipping_hidden_and_denied_entries() {
+        let root = size_fixture("walk-size");
+        assert_eq!(walk_size(&root, "", None, &allow_all_but_blocked), (7, false));
+        // A single file counts its own size (the frontend probes files too
+        // when the listing size is not at hand).
+        assert_eq!(
+            walk_size(&root, "a.txt", None, &allow_all_but_blocked),
+            (4, false)
+        );
+        // An entry the ACL denies contributes nothing.
+        assert_eq!(walk_size(&root, "sub", None, &allow_all_but_blocked), (3, false));
+        // A missing path is not an error, it just counts nothing.
+        assert_eq!(walk_size(&root, "nope", None, &allow_all_but_blocked), (0, false));
+    }
+
+    #[test]
+    fn walk_size_stops_early_once_past_the_limit() {
+        let root = size_fixture("walk-size-limit");
+        // Under the cap: the exact total is reported and nothing was skipped.
+        assert_eq!(walk_size(&root, "", Some(100), &allow_all_but_blocked), (7, false));
+        // Equal to the cap is still fine (`>`, not `>=`).
+        assert_eq!(walk_size(&root, "", Some(7), &allow_all_but_blocked), (7, false));
+        // Over the cap: the walk short-circuits, so the total is a lower
+        // bound — enough for the caller to reject the download.
+        let (size, exceeded) = walk_size(&root, "", Some(3), &allow_all_but_blocked);
+        assert!(exceeded);
+        assert!(size > 3);
     }
 
     #[test]

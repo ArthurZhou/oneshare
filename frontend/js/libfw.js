@@ -14,7 +14,11 @@
 //     download streams into a user-picked directory.
 //   - a native in-browser fallback (`downloadMode: 'auto'`) when it is not —
 //     single files are saved via a normal browser download, folders are
-//     packed into a `.zip` and downloaded.
+//     packed into a `.zip` and downloaded. That path buffers the whole
+//     transfer in memory before saving it, so it is capped by
+//     `[libfw] max_fallback_bytes` (served as `maxFallbackBytes`); the app
+//     pre-checks each download against `Libfw.fallbackLimit()` so an
+//     oversized one is refused before any bytes move.
 // The SDK sends the opaque shadow paths (`v1.…`) from `/api/files/token`
 // and `/dir` listings; the embedded libfw server decrypts them back to the
 // real paths it authorizes, so real filesystem paths never reach the
@@ -54,6 +58,13 @@
     downloadWindow: typeof served.downloadWindow === 'number'
       ? served.downloadWindow
       : (typeof served.concurrency === 'number' ? served.concurrency : 4),
+    // In-memory ceiling for the SDK's browser download fallback (browsers
+    // WITHOUT the File System Access API buffer a whole transfer before
+    // saving it). Served as `maxFallbackBytes`; the backend replaces a
+    // configured 0 (which the SDK reads as "no limit") with the default.
+    maxFallbackBytes: typeof served.maxFallbackBytes === 'number' && served.maxFallbackBytes > 0
+      ? served.maxFallbackBytes
+      : 512 * 1024 * 1024,
     maxRetries: typeof served.maxRetries === 'number' ? served.maxRetries : 3,
     baseRetryDelayMs: typeof served.baseRetryDelayMs === 'number' ? served.baseRetryDelayMs : 500,
     maxRetryDelayMs: typeof served.maxRetryDelayMs === 'number' ? served.maxRetryDelayMs : 30000,
@@ -181,9 +192,29 @@
     _dirHandle: null,
     _batchReuse: false,
 
+    // Mirrors libfw-client's own `_supportsFsAccess()` probe (picker + handle
+    // globals). Kept in sync so callers only pre-warm the directory picker on
+    // browsers where the SDK will actually take the FS-API save path — on
+    // others the SDK saves the transfer itself (single file via a normal
+    // browser download, folder as an uncompressed `.zip`).
+    supportsFsAccess() {
+      return typeof window !== 'undefined'
+        && typeof window.showDirectoryPicker === 'function'
+        && typeof FileSystemFileHandle !== 'undefined'
+        && typeof FileSystemDirectoryHandle !== 'undefined';
+    },
+
+    // In-memory ceiling the SDK enforces on a single browser-fallback
+    // download (`[libfw] max_fallback_bytes`). Only meaningful when
+    // `supportsFsAccess()` is false — with the FS API the transfer streams to
+    // disk and nothing is buffered.
+    fallbackLimit() {
+      return opts.maxFallbackBytes;
+    },
+
     async ensureDirectoryHandle() {
       if (this._dirHandle) return this._dirHandle;
-      if (typeof window === 'undefined' || typeof window.showDirectoryPicker !== 'function') {
+      if (!this.supportsFsAccess()) {
         throw new Error('当前浏览器不支持目录选择，无法按分片方式下载。');
       }
       try {
@@ -234,6 +265,7 @@
           chunkSize: opts.chunkSize,
           uploadWindow: opts.uploadWindow,
           downloadWindow: opts.downloadWindow,
+          maxFallbackBytes: opts.maxFallbackBytes,
           maxRetries: opts.maxRetries,
           baseRetryDelayMs: opts.baseRetryDelayMs,
           maxRetryDelayMs: opts.maxRetryDelayMs,

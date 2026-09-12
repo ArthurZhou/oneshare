@@ -74,6 +74,14 @@ chunk_size = 2097152
 upload_window = 4
 # Number of parallel byte ranges for one file on the download side.
 download_window = 4
+# In-memory ceiling (bytes) for the browser's download fallback, used on
+# browsers WITHOUT the File System Access API: the SDK cannot stream to disk
+# there, so it buffers a whole transfer in memory and only then saves it (a
+# single file via a normal browser download, a folder as an uncompressed zip).
+# Peak memory is roughly 2-3x the transfer size, so this bounds it. With the
+# FS API nothing is buffered and this has no effect.
+# 0 is rejected (libfw-client reads it as "no limit") and the default is used.
+max_fallback_bytes = 536870912
 # Retry policy for transfer chunks/files.
 max_retries = 3
 base_retry_delay_ms = 500

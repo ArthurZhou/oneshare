@@ -74,6 +74,23 @@ pub struct LibfwConfig {
     /// without this knob the frontend would silently use the SDK default.
     #[serde(default = "default_download_window")]
     pub download_window: u32,
+    /// Client SDK: in-memory ceiling (bytes) for the browser's download
+    /// fallback, served as libfw-client's `maxFallbackBytes` (default 512 MiB,
+    /// the SDK's own default).
+    ///
+    /// Only relevant on browsers WITHOUT the File System Access API: the SDK
+    /// cannot stream to disk there, so it buffers a whole transfer in memory
+    /// and only then saves it (a single file via a normal browser download,
+    /// a folder as an uncompressed `.zip`). Peak heap is roughly 2–3× the
+    /// transfer size (the buffered chunks plus the assembled blob), so this
+    /// bounds how large a fallback download may be. With the FS API nothing
+    /// is buffered and the knob has no effect.
+    ///
+    /// `0` is REJECTED (warned about at startup and served as the default):
+    /// libfw-client reads it as "no limit at all", which is exactly the
+    /// out-of-memory footgun this knob exists to prevent.
+    #[serde(default = "default_max_fallback_bytes")]
+    pub max_fallback_bytes: u64,
     /// Client SDK: retries per chunk/file before failing (default 3).
     #[serde(default = "default_max_retries")]
     pub max_retries: u32,
@@ -154,6 +171,7 @@ impl Default for LibfwConfig {
             chunk_size: default_chunk_size(),
             upload_window: default_upload_window(),
             download_window: default_download_window(),
+            max_fallback_bytes: default_max_fallback_bytes(),
             max_retries: default_max_retries(),
             base_retry_delay_ms: default_base_retry_delay_ms(),
             max_retry_delay_ms: default_max_retry_delay_ms(),
@@ -224,6 +242,9 @@ fn default_upload_window() -> u32 {
 fn default_download_window() -> u32 {
     4 // matches the libfw-client SDK's own downloadWindow default
 }
+fn default_max_fallback_bytes() -> u64 {
+    512 * 1024 * 1024 // 512 MiB — matches the SDK's own maxFallbackBytes default
+}
 fn default_max_retries() -> u32 {
     3
 }
@@ -260,6 +281,19 @@ impl LibfwConfig {
     pub fn compress_level_json(&self) -> serde_json::Value {
         compress_level_json(self.compress_level.trim())
             .unwrap_or_else(|| serde_json::Value::String("balanced".to_string()))
+    }
+
+    /// The browser-fallback memory cap served to the SDK as `maxFallbackBytes`.
+    ///
+    /// `0` means "unlimited" to libfw-client, so it is never served: it would
+    /// disable the only guard against an out-of-memory fallback download. A
+    /// startup warning points at the misconfiguration (see `main`).
+    pub fn effective_max_fallback_bytes(&self) -> u64 {
+        if self.max_fallback_bytes == 0 {
+            default_max_fallback_bytes()
+        } else {
+            self.max_fallback_bytes
+        }
     }
 
     /// Build libfw's `EncryptedPathCodec` from `path_key`.
@@ -306,6 +340,23 @@ mod tests {
         assert_eq!(cfg.auto_tune_max_chunk_size, 8 * 1024 * 1024);
         assert!(!cfg.auto_tune);
         assert_eq!(cfg.compress_level_json(), serde_json::json!("balanced"));
+        assert_eq!(cfg.max_fallback_bytes, 512 * 1024 * 1024);
+        assert_eq!(cfg.effective_max_fallback_bytes(), 512 * 1024 * 1024);
+    }
+
+    #[test]
+    fn max_fallback_bytes_zero_is_replaced_by_the_default() {
+        // libfw-client reads 0 as "unlimited", which would remove the only
+        // guard against an out-of-memory fallback download — never serve it.
+        assert_eq!(
+            parse("[libfw]\nmax_fallback_bytes = 0\n").effective_max_fallback_bytes(),
+            512 * 1024 * 1024
+        );
+        // A real value passes through untouched.
+        assert_eq!(
+            parse("[libfw]\nmax_fallback_bytes = 1048576\n").effective_max_fallback_bytes(),
+            1024 * 1024
+        );
     }
 
     #[test]
