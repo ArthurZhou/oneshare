@@ -1208,10 +1208,13 @@ pub async fn get_names(
         return Err(StatusCode::BAD_REQUEST);
     }
     let ru = get_request_user(&jar, &state.db).await?;
-    let acl_entries = state
-        .db
-        .list_acl_entries_cached()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    // Use the REQUEST identity's ACL view (`ru.acl_entries`), not the raw
+    // global cache: for a share visitor the visible tree comes from the
+    // share's synthesized read grants, so resolving a shadow against the
+    // global table alone yields no share and answers 403 — which broke every
+    // libfw download under a share link (the SDK resolves display names for
+    // both file and folder saves through this endpoint).
+    let acl_entries = ru.acl_entries(&state.db)?;
 
     let mut out = HashMap::with_capacity(paths.len());
     let mut seen = std::collections::HashSet::new();
@@ -1364,6 +1367,48 @@ mod tests {
         let p = std::env::temp_dir().join(format!("oneshare-{}-{}", name, std::process::id()));
         let _ = std::fs::remove_dir_all(&p);
         p
+    }
+
+    /// A share visitor's display-name resolution must run against the REQUEST
+    /// identity's ACL view (`RequestUser::acl_entries`: global table + the
+    /// share's synthesized read grants), never the raw global cache.
+    ///
+    /// Regression guard for the share-download 403: `get_names` used
+    /// `Database::list_acl_entries_cached` (global rows only), where the
+    /// virtual share identity (id [`crate::db::SHARE_USER_ID`]) matches no
+    /// entry — so every shadow decoded to "not in any of my shares" and the
+    /// endpoint answered 403. The libfw SDK resolves display names through
+    /// this endpoint for every download (file names and folder/ZIP entry
+    /// names), so ALL downloads under a share link failed with a 403.
+    #[test]
+    fn share_visitor_resolves_names_through_share_grants() {
+        let dir = std::env::temp_dir().join(format!("oneshare-share-names-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = crate::db::Database::new(dir.join("test.db").to_str().unwrap(), None).unwrap();
+        db.create_share_link("tok", "pub", "pub", "pub", true, 1, "tester", None)
+            .unwrap();
+
+        let ru = crate::auth::session::RequestUser {
+            user: crate::auth::session::share_user("tok", "pub"),
+            groups: Vec::new(),
+            share_entries: db.get_share_acl_entries("tok").unwrap(),
+        };
+
+        // The share's real path is reachable, and maps back to the path the
+        // visitor sees (a root-level share folder named after its leaf).
+        let entries = ru.acl_entries(&db).unwrap();
+        assert_eq!(
+            acl::display_path_for(&ru.user, &ru.groups, &entries, "pub/a.txt").as_deref(),
+            Some("pub/a.txt")
+        );
+
+        // The global cache alone (the bug) resolves nothing for this identity.
+        let global = db.list_acl_entries_cached().unwrap();
+        assert_eq!(
+            acl::display_path_for(&ru.user, &ru.groups, &global, "pub/a.txt"),
+            None
+        );
     }
 
     /// Build `root/` with a nested tree used by the `walk_size` tests:
